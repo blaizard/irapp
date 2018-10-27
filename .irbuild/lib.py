@@ -48,7 +48,7 @@ def shell(cwd, command, captureStdout=False, ignoreError=False):
 	if proc.returncode != 0:
 		message = "Fail to execute '%s' in '%s' (errno=%i)" % (" ".join(command), str(cwd), proc.returncode)
 		if ignoreError:
-			log.warning(message)
+			warning(message)
 		else:
 			raise Exception(message)
 
