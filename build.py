@@ -117,7 +117,7 @@ def update(*args):
 			currentGitHash = f.read()
 	lib.info("Current version: %s" % (str(currentGitHash)))
 
-	gitRemote = lib.shell(["git", "ls-remote", "--head", GIT_REPOSITORY], captureStdout=True)
+	gitRemote = lib.shell(["git", "ls-remote", GIT_REPOSITORY, "HEAD"], captureStdout=True)
 	gitHash = gitRemote[0].lstrip().split()[0]
 	lib.info("Latest version available: %s" % (gitHash))
 
