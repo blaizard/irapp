@@ -129,6 +129,6 @@ class CMake(lib.Module):
 		# If the build type is different then clean the directory
 		if buildType != currentBuildType:
 			self.clean()
-			self.setDefaultBuild(self.config, buildType)
+			self.setDefaultBuild(buildType)
 
 		lib.shell(self.config["root"], ["cmake", "--build", os.path.join(buildDirPath, buildType), "--", "-j3"])
