@@ -1,0 +1,4 @@
+.irbuild-assets/
+build/
+CMakeLists.txt
+Jenkinsfile

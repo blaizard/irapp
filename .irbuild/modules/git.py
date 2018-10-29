@@ -22,20 +22,20 @@ class Git(lib.Module):
 
 					# If no git directory is present, create it
 					if not os.path.isdir(gitDirPath):
-						lib.shell(root, ["git", "init"])
+						lib.shell(["git", "init"], cwd=root)
 
 						# Update the index with submodules
-						submodulesPath = lib.shell(root, ["git", "config", "-f", ".gitmodules", "--get-regexp", "^submodule\..*\.path$"], captureStdout=True)
+						submodulesPath = lib.shell(["git", "config", "-f", ".gitmodules", "--get-regexp", "^submodule\..*\.path$"], cwd=root, captureStdout=True)
 						for pathKeyAndPath in submodulesPath:
 							pathKeyAndPath = pathKeyAndPath.split(" ", 1)
 							urlKey = pathKeyAndPath[0].replace(".path", ".url", 1)
 							path = pathKeyAndPath[1]
-							url = lib.shell(root, ["git", "config", "-f", ".gitmodules", "--get", urlKey], captureStdout=True)
+							url = lib.shell(["git", "config", "-f", ".gitmodules", "--get", urlKey], cwd=root, captureStdout=True)
 
 							lib.info("Add submodule %s to path %s" % (url[0], path))
-							lib.shell(root, ["git", "submodule", "add", "-f", url[0], path], ignoreError=True)
+							lib.shell(["git", "submodule", "add", "-f", url[0], path], cwd=root, ignoreError=True)
 
 		# Update and init the submodules if needed
 		if hasGitmodules:
 			lib.info("Updating git submodules")
-			lib.shell(self.config["root"], ["git", "submodule", "update", "--init", "--recursive"])
+			lib.shell(["git", "submodule", "update", "--init", "--recursive"], cwd=self.config["root"])

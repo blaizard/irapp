@@ -13,8 +13,10 @@ GIT_REPOSITORY = "https://github.com/blaizard/irbuild.git"
 EXECUTABLE_PATH = os.path.realpath(__file__)
 EXECUTABLE_DIRECTORY_PATH = os.path.realpath(os.path.dirname(__file__))
 EXECUTABLE_NAME = os.path.basename(__file__)
-DEPENDENCIES_PATH = "%s/.irbuild" % (EXECUTABLE_DIRECTORY_PATH)
-TEMP_DIRECTORY_PATH = "%s/.irbuild-temp" % (EXECUTABLE_DIRECTORY_PATH)
+DEPENDENCIES_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild")
+TEMP_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild-temp")
+ASSETS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild-assets")
+DEFAULT_CONFIG_FILE = ".irbuild.json"
 
 """
 Load the necessary dependencies
@@ -45,7 +47,8 @@ def readConfig(path):
 
 	config = {
 		"types": types,
-		"root": os.path.realpath(os.getcwd()),
+		"root": EXECUTABLE_DIRECTORY_PATH,
+		"assets": ASSETS_DIRECTORY_PATH,
 		"pimpl": {}
 	}
 
@@ -91,18 +94,32 @@ def readConfig(path):
 """
 Entry point for all action mapped to the supported and enabled modules.
 """
-def action(command, configPath, *args):
+def action(args):
 	# Read the configuration
-	config = readConfig(configPath)
+	config = readConfig(args.configPath)
 
-	lib.info("Running command '%s' in '%s'" % (str(command), str(config["root"])))
+	lib.info("Running command '%s' in '%s'" % (str(args.command), str(config["root"])))
 	for moduleId in config["types"]:
-		if command == "init":
-			config["pimpl"][moduleId].init(*args)
-		elif command == "build":
-			config["pimpl"][moduleId].build(*args)
-		elif command == "clean":
-			config["pimpl"][moduleId].clean(*args)
+		if args.command == "init":
+			# Clear the assets directory if it exists
+			if os.path.isdir(ASSETS_DIRECTORY_PATH):
+				shutil.rmtree(ASSETS_DIRECTORY_PATH)
+			config["pimpl"][moduleId].init()
+		elif args.command == "build":
+			config["pimpl"][moduleId].build(args.type)
+		elif args.command == "clean":
+			config["pimpl"][moduleId].clean()
+
+"""
+Run the program specified
+"""
+def run(args):
+	lib.info("Running command '%s'" % (" ".join(args.args)))
+
+	while True:
+		lib.shell(args.args)
+		if not args.endless:
+			break
 
 """
 Updating the tool
@@ -139,7 +156,7 @@ def update(*args):
 	# Read the version changes
 	changeList = None
 	if currentGitHash:
-		changeList = lib.shell(["git", "log", "--pretty=\"format:%s\"", "%s..HEAD" % (currentGitHash)], cwd=TEMP_DIRECTORY_PATH, captureStdout=True) 
+		changeList = lib.shell(["git", "log", "--pretty=\"%s\"", "%s..HEAD" % (currentGitHash)], cwd=TEMP_DIRECTORY_PATH, captureStdout=True) 
 
 	# These are the location of the files for the updated and should NOT change over time
 	executableName = "build.py"
@@ -160,7 +177,7 @@ def update(*args):
 	with open(hashPath, "w") as f:
 		f.write(gitHash)
 
-	lib.info("Update succeed to %s" % (gitHash))
+	lib.info("Update to %s succeed." % (gitHash))
 	if changeList:
 		lib.info("Change(s):")
 		for change in changeList:
@@ -174,7 +191,7 @@ Minimalistic lib implementation as a fallback
 class lib:
 	@staticmethod
 	def info(message, type = "INFO"):
-		print "[%s] %s" % (str(type), str(message))
+		print("[%s] %s" % (str(type), str(message)))
 
 	@staticmethod
 	def warning(message):
@@ -191,16 +208,13 @@ class lib:
 	@staticmethod
 	def shell(command, cwd=".", captureStdout=False, ignoreError=False):
 		proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=(subprocess.PIPE if captureStdout else None),
-				stderr=(subprocess.PIPE if captureStdout else None))
+				stderr=(subprocess.PIPE if captureStdout else subprocess.STDOUT))
 
 		output = []
 		if proc.stdout:
 			for line in iter(proc.stdout.readline, b''):
 				line = line.rstrip()
-				if captureStdout:
-					output.append(line)
-				else:
-					print line
+				output.append(line)
 
 		out, error = proc.communicate()
 		if proc.returncode != 0:
@@ -223,13 +237,27 @@ if __name__ == "__main__":
 		"init": action,
 		"clean": action,
 		"build": action,
+		"run": run,
 		"update": update
 	}
 
 	parser = argparse.ArgumentParser(description = "Build script.")
-	parser.add_argument('command', nargs='?', action="store", default="build", help='Valid commands are "init", (default) "build", "clean".')
-	parser.add_argument('--config', action="store", dest="configPath", default=".irbuild.json", help='Path of the build definition.')
-	parser.add_argument('args', nargs='*', help='Extra arguments to be passed to the command executed.')
+	parser.add_argument('--config', action="store", dest="configPath", default=DEFAULT_CONFIG_FILE, help="Path of the build definition (default=%s)." % (DEFAULT_CONFIG_FILE))
+	parser.add_argument('-e', action="store_true", dest="endless", default=False, help="Run the command endlessly (until it fails).")
+
+	subparsers = parser.add_subparsers(dest="command", help='List of availabel commands.')
+
+	parserRun = subparsers.add_parser("run", help='Execute the specified commmand.')
+	parserRun.add_argument("-e", "--endless", action="store_true", dest="endless", default=False, help="Run the command endlessly (until it fails).")
+	parserRun.add_argument('args', nargs='*', help='Extra arguments to be passed to the command executed.')
+
+	subparsers.add_parser("init", help='Initialize or setup the project environment.')
+	subparsers.add_parser("clean", help='Clean the project environment from build artifacts.')
+	parserBuild = subparsers.add_parser("build", help='Build the project.')
+	parserBuild.add_argument('type', action='store', nargs='?', help='Build type.')
+
+	subparsers.add_parser("update", help='Update the tool to the latest version available.')
+
 	args = parser.parse_args()
 
 	# Excecute the action
@@ -237,7 +265,7 @@ if __name__ == "__main__":
 	if fct == None:
 		lib.error("Invalid command '%s'" % (str(args.command)))
 		parser.print_help()
-		sys.exit()
+		sys.exit(1)
 
 	# Execute the proper action
-	fct(args.command, args.configPath, *args.args)
+	fct(args)
