@@ -60,6 +60,12 @@ class CMake(lib.Module):
 		lib.shell(["rm", "-rfd", os.path.basename(self.config["buildDir"])], cwd=os.path.dirname(buildDirPath))
 		lib.shell(["mkdir", os.path.basename(self.config["buildDir"])], cwd=os.path.dirname(buildDirPath))
 
+		# Remove all CMakeCache.txt if existing
+		for root, dirs, files in os.walk(self.config["root"]):
+			for file in files:
+				if file == "CMakeCache.txt":
+					os.remove(os.path.join(root, file))
+
 		# Initialize CMake configurations
 		defaultBuildType = None
 		firstValidBuild = None

@@ -19,6 +19,8 @@ pipeline {
 			steps
 			{
 				echo "cppcheck Version: ${sh(returnStdout: true, script: 'cppcheck --version')}"
+				sh './build.py update'
+				sh './build.py init'
 				sh 'cppcheck %for ignore in staticAnalyzerIgnore% -i%ignore% %end% --enable=all --report-progress --std=%staticAnalyzerStd% --inline-suppr --xml --xml-version=2 . 2>cppcheck.xml'
 				publishCppcheck(pattern: 'cppcheck.xml', displayAllErrors: true, severityError: true, severityWarning: true, severityStyle: true, severityPortability: true, severityPerformance: true)
 			}

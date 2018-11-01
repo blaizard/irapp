@@ -243,18 +243,17 @@ if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser(description = "Build script.")
 	parser.add_argument('--config', action="store", dest="configPath", default=DEFAULT_CONFIG_FILE, help="Path of the build definition (default=%s)." % (DEFAULT_CONFIG_FILE))
-	parser.add_argument('-e', action="store_true", dest="endless", default=False, help="Run the command endlessly (until it fails).")
 
 	subparsers = parser.add_subparsers(dest="command", help='List of availabel commands.')
 
 	parserRun = subparsers.add_parser("run", help='Execute the specified commmand.')
 	parserRun.add_argument("-e", "--endless", action="store_true", dest="endless", default=False, help="Run the command endlessly (until it fails).")
-	parserRun.add_argument('args', nargs='*', help='Extra arguments to be passed to the command executed.')
+	parserRun.add_argument("args", nargs=argparse.REMAINDER, help='Extra arguments to be passed to the command executed.')
 
 	subparsers.add_parser("init", help='Initialize or setup the project environment.')
 	subparsers.add_parser("clean", help='Clean the project environment from build artifacts.')
 	parserBuild = subparsers.add_parser("build", help='Build the project.')
-	parserBuild.add_argument('type', action='store', nargs='?', help='Build type.')
+	parserBuild.add_argument("type", action='store', nargs='?', help='Build type.')
 
 	subparsers.add_parser("update", help='Update the tool to the latest version available.')
 
