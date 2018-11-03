@@ -69,16 +69,18 @@ class CMake(lib.Module):
 		# Initialize CMake configurations
 		defaultBuildType = None
 		firstValidBuild = None
-		updatedBuildConfigs = {}
 		for name, buildConfig in self.config["buildConfigs"].items():
 
 			# Set default values
 			updatedBuildConfig = {
 				"type": "Debug",
 				"compiler": "gcc",
-				"default": False
+				"default": False,
+				"available": False
 			}
 			updatedBuildConfig.update(buildConfig)
+			# Update the build config
+			self.config["buildConfigs"][name] = updatedBuildConfig
 
 			lib.info("Initializing build configuration '%s' with generator '%s'" % (name, str(self.config["buildGenerator"])))
 			lib.shell(["mkdir", "-p", name], cwd=buildDirPath)
@@ -99,6 +101,9 @@ class CMake(lib.Module):
 				lib.warning("Unable to find compiler for '%s', ignoring configuration '%s'" % (updatedBuildConfig["compiler"], name))
 				continue
 
+			# Mark the configuration as available if it is for this platform
+			self.config["buildConfigs"][name]["available"] = True
+
 			lib.shell(["cmake", "-G", self.config["buildGenerator"], "-DCMAKE_BUILD_TYPE=%s" % (updatedBuildConfig["type"]),
 					"-DCMAKE_C_COMPILER=%s" % (cCompiler), "-DCMAKE_CXX_COMPILER=%s" % (cxxCompiler), "../.."], cwd=buildTypePath)
 
@@ -110,12 +115,6 @@ class CMake(lib.Module):
 			# Save the first valid build to identify if any build has been processed
 			if not firstValidBuild:
 				firstValidBuild = name
-
-			# Update the build config
-			updatedBuildConfigs[name] = updatedBuildConfig
-
-		# Set the new build config
-		self.config["buildConfigs"] = updatedBuildConfigs
 
 		if not firstValidBuild:
 			lib.error("No build configuration has been set.")
