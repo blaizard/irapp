@@ -15,7 +15,7 @@ class Jenkins(lib.Module):
 		return {
 			"staticAnalyzer": True,
 			"staticAnalyzerIgnore": ["gtest", "googletest", "CMakeFiles"],
-			"staticAnalyzerStd": "c++11",
+			"staticAnalyzerStd": "c++14",
 			"dependencies": [],
 			"tests": []
 		}
@@ -38,7 +38,7 @@ class Jenkins(lib.Module):
 		valgrindSuppPath = self.copyAsset("valgrind.supp")
 
 		# Create the Jenkinsfile
-		with open(self.getAssetPath("cmake.Jenkinsfile"), "r") as f:
+		with open(self.getAssetPath("c++.Jenkinsfile"), "r") as f:
 			jenkinsfileStr = f.read()
 
 		# Update the buildConfigs with defautl values

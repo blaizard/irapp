@@ -156,7 +156,7 @@ def update(*args):
 	# Read the version changes
 	changeList = None
 	if currentGitHash:
-		changeList = lib.shell(["git", "log", "--pretty=\"%s\"", "%s..HEAD" % (currentGitHash)], cwd=TEMP_DIRECTORY_PATH, captureStdout=True) 
+		changeList = lib.shell(["git", "log", "--pretty=\"%s\"", "%s..HEAD" % (currentGitHash)], cwd=TEMP_DIRECTORY_PATH, captureStdout=True, ignoreError=True) 
 
 	# These are the location of the files for the updated and should NOT change over time
 	executableName = "build.py"
@@ -221,6 +221,7 @@ class lib:
 			message = "Fail to execute '%s' in '%s' (errno=%i)" % (" ".join(command), str(cwd), proc.returncode)
 			if ignoreError:
 				lib.warning(message)
+				output = []
 			else:
 				raise Exception(message)
 
