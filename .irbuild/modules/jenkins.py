@@ -15,7 +15,6 @@ class Jenkins(lib.Module):
 		return {
 			"staticAnalyzer": True,
 			"staticAnalyzerIgnore": ["gtest", "googletest", "CMakeFiles"],
-			"staticAnalyzerStd": "c++14",
 			"dependencies": [],
 			"tests": []
 		}
@@ -57,7 +56,6 @@ class Jenkins(lib.Module):
 			"dockerfilePath": dockerfilePath,
 			"staticAnalyzer": self.config["staticAnalyzer"],
 			"staticAnalyzerIgnore": self.config["staticAnalyzerIgnore"],
-			"staticAnalyzerStd": self.config["staticAnalyzerStd"],
 			"buildConfigs": updatedBuildConfigs,
 			"tests": self.config["tests"],
 			"valgrindSuppPath": valgrindSuppPath
