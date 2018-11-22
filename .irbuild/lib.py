@@ -40,7 +40,7 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False):
 	output = []
 	if proc.stdout:
 		for line in iter(proc.stdout.readline, b''):
-			line = line.rstrip()
+			line = line.rstrip().decode('utf-8')
 			output.append(line)
 
 	out, error = proc.communicate()
@@ -50,6 +50,8 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False):
 			warning(message)
 			output = []
 		else:
+			for line in output:
+				print(line)
 			raise Exception(message)
 
 	return output
@@ -220,9 +222,9 @@ class Module:
 	Return the path of an existing asset for read-only
 	"""
 	def getAssetPath(self, *name):
-		path = os.path.join(os.path.realpath(os.path.dirname(__file__)), "assets", *name)
+		path = os.path.join(os.path.realpath(os.path.dirname(__file__)), "templates", *name)
 		if not os.path.exists(path):
-			raise Execption("There is no assets at %s" % (path))
+			raise Exception("There is no assets at %s" % (path))
 		return path
 
 	"""
@@ -230,7 +232,10 @@ class Module:
 	relative to the root directory
 	"""
 	def publishAsset(self, content, *name):
-		path = os.path.join(self.config["assets"], *name)
+		return self.publishAssetTo(content, self.config["assets"], *name)
+
+	def publishAssetTo(self, content, directory, *name):
+		path = os.path.join(directory, *name)
 		# Create the directory path 
 		if not os.path.exists(os.path.dirname(path)):
 			os.makedirs(os.path.dirname(path))
@@ -243,10 +248,13 @@ class Module:
 	Copy an asset and returns its path relative to the root directory
 	"""
 	def copyAsset(self, *name):
+		return self.copyAssetTo(self.config["assets"], *name)
+
+	def copyAssetTo(self, directory, *name):
 		path = self.getAssetPath(*name)
 		with open(path, "r") as f:
 			content = f.read()
-		return self.publishAsset(content, *name)
+		return self.publishAssetTo(content, directory, *name)
 
 	"""
 	Runs the initialization of the module.
@@ -260,4 +268,8 @@ class Module:
 	def build(self, *args):
 		pass
 
+	def runPre(self, *args):
+		pass
 
+	def runPost(self, *args):
+		pass

@@ -1,21 +1,21 @@
 #!/usr/bin/python
 # -*- coding: iso-8859-1 -*-
 
-import argparse
 import json
 import sys
 import os
 import imp
 import subprocess
 import shutil
+import argparse
 
-GIT_REPOSITORY = "https://github.com/blaizard/irbuild.git"
+GIT_REPOSITORY = "https://github.com/blaizard/build.git"
 EXECUTABLE_PATH = os.path.realpath(__file__)
 EXECUTABLE_DIRECTORY_PATH = os.path.realpath(os.path.dirname(__file__))
 EXECUTABLE_NAME = os.path.basename(__file__)
 DEPENDENCIES_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild")
-TEMP_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild-temp")
-ASSETS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild-assets")
+TEMP_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild/temp")
+ASSETS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild/assets")
 DEFAULT_CONFIG_FILE = ".irbuild.json"
 
 """
@@ -114,12 +114,21 @@ def action(args):
 Run the program specified
 """
 def run(args):
+	# Read the configuration
+	config = readConfig(args.configPath)
+
 	lib.info("Running command '%s'" % (" ".join(args.args)))
+
+	for moduleId in config["types"]:
+		config["pimpl"][moduleId].runPre(*args.args)
 
 	while True:
 		lib.shell(args.args)
 		if not args.endless:
 			break
+
+	for moduleId in config["types"]:
+		config["pimpl"][moduleId].runPost(*args.args)
 
 """
 Updating the tool
@@ -171,7 +180,10 @@ def update(*args):
 	shutil.move(os.path.join(TEMP_DIRECTORY_PATH, executableName), EXECUTABLE_PATH)
 
 	# Remove temporary directory
-	shutil.rmtree(TEMP_DIRECTORY_PATH)
+	try:
+		shutil.rmtree(TEMP_DIRECTORY_PATH)
+	except Exception as e:
+		lib.warning("Could not delete %s, %s" % (TEMP_DIRECTORY_PATH, e))
 
 	# Create hash file
 	with open(hashPath, "w") as f:
@@ -213,7 +225,7 @@ class lib:
 		output = []
 		if proc.stdout:
 			for line in iter(proc.stdout.readline, b''):
-				line = line.rstrip()
+				line = line.rstrip().decode('utf-8')
 				output.append(line)
 
 		out, error = proc.communicate()
@@ -223,6 +235,8 @@ class lib:
 				lib.warning(message)
 				output = []
 			else:
+				for line in output:
+					print(line)
 				raise Exception(message)
 
 		return output

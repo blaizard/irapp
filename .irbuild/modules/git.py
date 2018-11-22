@@ -14,6 +14,11 @@ class Git(lib.Module):
 		# Updating gitmodule repos if any
 		hasGitmodules = False
 		for root, dirs, files in os.walk(self.config["root"]):
+			# Ignore any directories from the following list
+			for blackListDir in [".git", "node_modules"]:
+				if blackListDir in dirs:
+					dirs.remove(blackListDir)
+
 			for file in files:
 				if file == ".gitmodules":
 					hasGitmodules = True

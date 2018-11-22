@@ -14,7 +14,7 @@ class Jenkins(lib.Module):
 	def config():
 		return {
 			"staticAnalyzer": True,
-			"staticAnalyzerIgnore": ["gtest", "googletest", "CMakeFiles"],
+			"staticAnalyzerIgnore": [],
 			"dependencies": [],
 			"tests": []
 		}
@@ -23,6 +23,7 @@ class Jenkins(lib.Module):
 	Initialization for C++ projects
 	"""
 	def initCpp(self):
+
 		# Create the dockerfile image
 		with open(self.getAssetPath("jenkins.debian.latest.dockerfile"), "r") as f:
 			dockerfileStr = f.read()
