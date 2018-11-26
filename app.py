@@ -9,7 +9,7 @@ import subprocess
 import shutil
 import argparse
 
-GIT_REPOSITORY = "https://github.com/blaizard/irapp-private.git"
+GIT_REPOSITORY = "https://github.com/blaizard/irapp.git"
 EXECUTABLE_PATH = os.path.realpath(__file__)
 EXECUTABLE_DIRECTORY_PATH = os.path.realpath(os.path.dirname(__file__))
 EXECUTABLE_NAME = os.path.basename(__file__)
