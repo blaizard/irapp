@@ -86,6 +86,20 @@ class CMake(lib.Module):
 		# Check if this is a coverage build
 		return ("coverage" in self.config["buildConfigs"][buildType]) and (self.config["buildConfigs"][buildType]["coverage"])
 
+	def getType(self, buildType=None):
+		if not buildType:
+			buildType = self.getDefaultBuildType()
+
+		# Check if this is a coverage build
+		return self.config["buildConfigs"][buildType]["type"] if ("type" in self.config["buildConfigs"][buildType]) else "Debug"
+
+	def getCompiler(self, buildType=None):
+		if not buildType:
+			buildType = self.getDefaultBuildType()
+
+		# Check if this is a coverage build
+		return self.config["buildConfigs"][buildType]["compiler"] if ("compiler" in self.config["buildConfigs"][buildType]) else "gcc"
+
 	def init(self):
 
 		# Print cmake version
@@ -110,21 +124,16 @@ class CMake(lib.Module):
 		firstValidBuild = None
 		for name, buildConfig in self.config["buildConfigs"].items():
 
-			# Set default values
+			# Set default values and update the build config
 			updatedBuildConfig = {
-				"type": "Debug",
-				"compiler": "gcc",
-				"coverage": False,
+				"type": self.getType(name),
+				"compiler": self.getCompiler(name),
+				"coverage": self.hasCoverage(name),
 				"default": False,
 				"available": False
 			}
 			updatedBuildConfig.update(buildConfig)
-			# Update the build config
 			self.config["buildConfigs"][name] = updatedBuildConfig
-
-			lib.info("Initializing build configuration '%s' with generator '%s'" % (name, str(self.config["buildGenerator"])))
-			lib.shell(["mkdir", "-p", name], cwd=buildDirPath)
-			buildTypePath = os.path.join(buildDirPath, name)
 
 			# Set the command
 			commandList = ["cmake", "-G", self.config["buildGenerator"], "-DCMAKE_BUILD_TYPE=%s" % (updatedBuildConfig["type"])]
@@ -151,7 +160,6 @@ class CMake(lib.Module):
 				cxxCompiler = lib.which("clang++")
 				if updatedBuildConfig["coverage"]:
 					isCoverageError = True
-					continue
 
 			else:
 				lib.error("Unkown compiler '%s' for build configuration '%s'" % (str(updatedBuildConfig["compiler"]), name))
@@ -172,6 +180,10 @@ class CMake(lib.Module):
 
 			# Mark the configuration as available if it is for this platform
 			self.config["buildConfigs"][name]["available"] = True
+
+			lib.info("Initializing build configuration '%s' with generator '%s'" % (name, str(self.config["buildGenerator"])))
+			lib.shell(["mkdir", "-p", name], cwd=buildDirPath)
+			buildTypePath = os.path.join(buildDirPath, name)
 
 			commandList.append("../..")
 			lib.shell(commandList, cwd=buildTypePath)
@@ -222,6 +234,21 @@ class CMake(lib.Module):
 
 		lib.shell(["cmake", "--build", os.path.join(buildDirPath, buildType), "--", "-j3"], cwd=self.config["root"])
 
+	def info(self, *args):
+
+		defaultBuildType = self.getDefaultBuildType()
+		buildDir = os.path.join(self.config["root"], self.config["buildDir"])
+		lib.info("Build configurations (using '%s'):" % (self.config["buildGenerator"]))
+		for buildType, buildConfig in self.config["buildConfigs"].items():
+			# Check if available
+			buildPath = os.path.join(buildDir, buildType)
+			buildPath = buildPath if os.path.isdir(buildPath) else ""
+
+			isDefaultBuildType = "(default)" if defaultBuildType == buildType else ""
+			hasCoverage = "(coverage)" if self.hasCoverage(buildType) else ""
+
+			lib.info("%20s %9s %8s %8s %10s %s" % (buildType, isDefaultBuildType, self.getType(buildType), self.getCompiler(buildType), hasCoverage, str(buildPath)))
+
 	def runPre(self, *args):
 
 		buildType = self.getDefaultBuildType()
@@ -233,20 +260,17 @@ class CMake(lib.Module):
 			gcovVersion = lib.shell(["gcov", "--version"], captureStdout=True)
 			lib.info("gcov version: %s" % (re.search(r'([\d.]+)', gcovVersion[0]).group(1)))
 
-			# Clean-up directory
+			# Clean-up directory by removing all previous gcda files
 			buildDir = os.path.join(self.config["root"], self.config["buildDir"], buildType)
+			for root, dirs, files in os.walk(buildDir):
+				for file in files:
+					if file.endswith(".gcda"):
+						os.remove(os.path.join(root, file))
 
 			# Clean-up and create the coverage directory
 			coverageDir = os.path.join(self.config["root"], self.config["buildDir"], "coverage")
 			lib.shell(["rm", "-rfd", coverageDir], cwd=self.config["root"])
 			lib.shell(["mkdir", coverageDir], cwd=self.config["root"])
-
-			# Reset the coverage counters
-			#lib.shell(["lcov", "--base-directory", "'%s'" % (buildDir) , "--directory", "'%s'" % (buildDir), "--zerocounters", "-q"], cwd=self.config["root"])
-
-			# Execute an empty run to setup the base
-			#lib.shell(["lcov", "--capture", "--initial", "--base-directory", "%s" % (buildDir), "--directory", "%s" % (buildDir),
-			#		"--output-file", os.path.join(coverageDir, "lcov_base.info"), "-q"], cwd=self.config["root"])
 
 			# Reset the coverage counters
 			lib.shell(["lcov", "--directory", "'%s'" % (buildDir), "--zerocounters", "-q"], cwd=self.config["root"])
@@ -264,10 +288,6 @@ class CMake(lib.Module):
 
 			coverageDir = os.path.join(self.config["root"], self.config["buildDir"], "coverage")
 			buildDir = os.path.join(self.config["root"], self.config["buildDir"], buildType)
-
-			# Execute the run on the previosu executable
-			#lib.shell(["lcov", "--capture", "--base-directory", "%s" % (buildDir), "--directory", "%s" % (buildDir),
-			#		"--output-file", os.path.join(coverageDir, "lcov_run.info"), "-q"], cwd=self.config["root"])
 
 			# Execute the run on the previosu executable
 			lib.shell(["lcov", "--capture", "--directory", "%s" % (buildDir),

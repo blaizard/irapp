@@ -19,8 +19,8 @@ pipeline {
 			steps
 			{
 				echo "cppcheck Version: ${sh(returnStdout: true, script: 'cppcheck --version')}"
-				sh './build.py update'
-				sh './build.py init'
+				sh './app.py update'
+				sh './app.py init'
 				sh 'cppcheck %for ignore in staticAnalyzerIgnore% -i%ignore% --suppress="*:*%ignore%*" %end% --enable=warning,style,performance,portability,unusedFunction,missingInclude --report-progress --inline-suppr --xml --xml-version=2 . 2>cppcheck.xml'
 				publishCppcheck(pattern: 'cppcheck.xml', displayAllErrors: true, severityError: true, severityWarning: true, severityStyle: true, severityPortability: true, severityPerformance: true)
 			}
@@ -47,9 +47,9 @@ pipeline {
 						{
 							steps
 							{
-								sh './build.py update'
-								sh './build.py init'
-								sh './build.py build %buildName%'
+								sh './app.py update'
+								sh './app.py init'
+								sh './app.py build %buildName%'
 								%if options.compiler == "clang"% warnings(consoleParsers: [[parserName: 'Clang (LLVM based)']]) %end%
 								%if options.compiler == "gcc"% warnings(consoleParsers: [[parserName: 'GNU Make + GNU C Compiler (gcc)']]) %end%
 							}

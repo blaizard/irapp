@@ -262,6 +262,9 @@ class Module:
 	def init(self):
 		pass
 
+	def info(self):
+		pass
+
 	def clean(self):
 		pass
 

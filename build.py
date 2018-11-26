@@ -9,14 +9,14 @@ import subprocess
 import shutil
 import argparse
 
-GIT_REPOSITORY = "https://github.com/blaizard/build.git"
+GIT_REPOSITORY = "https://github.com/blaizard/irapp-private.git"
 EXECUTABLE_PATH = os.path.realpath(__file__)
 EXECUTABLE_DIRECTORY_PATH = os.path.realpath(os.path.dirname(__file__))
 EXECUTABLE_NAME = os.path.basename(__file__)
-DEPENDENCIES_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild")
-TEMP_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild/temp")
-ASSETS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irbuild/assets")
-DEFAULT_CONFIG_FILE = ".irbuild.json"
+DEPENDENCIES_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp")
+TEMP_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/temp")
+ASSETS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/assets")
+DEFAULT_CONFIG_FILE = ".irapp.json"
 
 """
 Load the necessary dependencies
@@ -25,8 +25,8 @@ def loadDependencies():
 	try:
 		if not os.path.isdir(DEPENDENCIES_PATH):
 			raise Exception("Missing tool dependencies at %s" % (DEPENDENCIES_PATH))
-		irbuild = imp.load_module("irbuild", None, DEPENDENCIES_PATH, ('', '', imp.PKG_DIRECTORY))
-		if not irbuild:
+		irapp = imp.load_module("irapp", None, DEPENDENCIES_PATH, ('', '', imp.PKG_DIRECTORY))
+		if not irapp:
 			raise Exception("Could not load dependencies")
 	except Exception as e:
 		lib.error("%s, abort." % (e))
@@ -34,7 +34,7 @@ def loadDependencies():
 		sys.exit(1)
 
 	# Load the dependencies
-	return irbuild.loadModules(), irbuild.getTypeList(), irbuild.lib
+	return irapp.loadModules(), irapp.getTypeList(), irapp.lib
 
 """
 Read the configruation file and create it if it does not exists.
@@ -111,6 +111,17 @@ def action(args):
 			config["pimpl"][moduleId].clean()
 
 """
+Print information regarding the program and loaded modules
+"""
+def info(args):
+	# Read the configuration
+	config = readConfig(args.configPath)
+
+	lib.info("Hash: %s" % (str(getCurrentHash())))
+	for moduleId in config["types"]:
+		config["pimpl"][moduleId].info()
+
+"""
 Run the program specified
 """
 def run(args):
@@ -131,26 +142,33 @@ def run(args):
 		config["pimpl"][moduleId].runPost(*args.args)
 
 """
-Updating the tool
+Return the current hash or None if not available
 """
-def update(*args):
-
-	# Read the current hash
-	currentGitHash = None
+def getCurrentHash():
 	hashPath = os.path.join(DEPENDENCIES_PATH, ".hash")
 	if os.path.isfile(hashPath):
 		with open(hashPath, "r") as f:
-			currentGitHash = f.read()
+			return f.read()
+	return None
+
+"""
+Updating the tool
+"""
+def update(args):
+
+	# Read the current hash
+	currentGitHash = getCurrentHash()
 	lib.info("Current version: %s" % (str(currentGitHash)))
 
-	gitRemote = lib.shell(["git", "ls-remote", GIT_REPOSITORY, "HEAD"], captureStdout=True)
-	gitHash = gitRemote[0].lstrip().split()[0]
-	lib.info("Latest version available: %s" % (gitHash))
+	if not args.force:
+		gitRemote = lib.shell(["git", "ls-remote", GIT_REPOSITORY, "HEAD"], captureStdout=True)
+		gitHash = gitRemote[0].lstrip().split()[0]
+		lib.info("Latest version available: %s" % (gitHash))
 
-	# Need to update
-	if currentGitHash == gitHash:
-		lib.info("Already up to date!")
-		return
+		# Need to update
+		if currentGitHash == gitHash:
+			lib.info("Already up to date!")
+			return
 	lib.info("Updating to latest version...")
 
 	# Create and cleanup the temporary directory
@@ -168,16 +186,35 @@ def update(*args):
 		changeList = lib.shell(["git", "log", "--pretty=\"%s\"", "%s..HEAD" % (currentGitHash)], cwd=TEMP_DIRECTORY_PATH, captureStdout=True, ignoreError=True) 
 
 	# These are the location of the files for the updated and should NOT change over time
-	executableName = "build.py"
-	dependenciesDirectoryName = ".irbuild"
+	executableName = "app.py"
+	dependenciesDirectoryName = ".irapp"
 
-	# Replace the dependencies directory
-	if os.path.isdir(DEPENDENCIES_PATH):
-		shutil.rmtree(DEPENDENCIES_PATH)
-	shutil.move(os.path.join(TEMP_DIRECTORY_PATH, dependenciesDirectoryName), DEPENDENCIES_PATH)
+	# Remove everything inside the dependencies path, except the current temp directory
+	tempFullPath = os.path.realpath(TEMP_DIRECTORY_PATH)
+	for root, dirs, files in os.walk(DEPENDENCIES_PATH):
+		for name in files:
+			os.remove(os.path.join(root, name))
+
+		for name in dirs:
+			fullPath = os.path.realpath(os.path.join(root, name))
+			if not tempFullPath.startswith(fullPath):
+				shutil.rmtree(fullPath)
+			# Do not look into this path
+			if tempFullPath == fullPath:
+				dirs.remove(name)
+
+	# Move the content of the dependencies directory into the new one
+	dependenciesDirectoryPath = os.path.join(TEMP_DIRECTORY_PATH, dependenciesDirectoryName)
+	dependenciesContentFiles = os.listdir(dependenciesDirectoryPath)
+	for fileName in dependenciesContentFiles:
+		shutil.move(os.path.join(dependenciesDirectoryPath, fileName), DEPENDENCIES_PATH)
 
 	# Replace main source file
 	shutil.move(os.path.join(TEMP_DIRECTORY_PATH, executableName), EXECUTABLE_PATH)
+
+	# Read again current hash
+	gitRawHash = lib.shell(["git", "rev-parse", "HEAD"], cwd=TEMP_DIRECTORY_PATH, captureStdout=True)
+	gitHash = gitRawHash[0].lstrip().split()[0]
 
 	# Remove temporary directory
 	try:
@@ -186,7 +223,7 @@ def update(*args):
 		lib.warning("Could not delete %s, %s" % (TEMP_DIRECTORY_PATH, e))
 
 	# Create hash file
-	with open(hashPath, "w") as f:
+	with open(os.path.join(DEPENDENCIES_PATH, ".hash"), "w") as f:
 		f.write(gitHash)
 
 	lib.info("Update to %s succeed." % (gitHash))
@@ -249,6 +286,7 @@ Entry point fo the script
 if __name__ == "__main__":
 
 	commandActions = {
+		"info": info,
 		"init": action,
 		"clean": action,
 		"build": action,
@@ -256,21 +294,24 @@ if __name__ == "__main__":
 		"update": update
 	}
 
-	parser = argparse.ArgumentParser(description = "Build script.")
+	parser = argparse.ArgumentParser(description = "Application helper script.")
 	parser.add_argument('--config', action="store", dest="configPath", default=DEFAULT_CONFIG_FILE, help="Path of the build definition (default=%s)." % (DEFAULT_CONFIG_FILE))
+	parser.add_argument('--version', action='version', version="%s hash: %s" % (os.path.basename(__file__), str(getCurrentHash())))
 
-	subparsers = parser.add_subparsers(dest="command", help='List of availabel commands.')
+	subparsers = parser.add_subparsers(dest="command", help='List of available commands.')
 
 	parserRun = subparsers.add_parser("run", help='Execute the specified commmand.')
 	parserRun.add_argument("-e", "--endless", action="store_true", dest="endless", default=False, help="Run the command endlessly (until it fails).")
 	parserRun.add_argument("args", nargs=argparse.REMAINDER, help='Extra arguments to be passed to the command executed.')
 
+	subparsers.add_parser("info", help='Display information about the script and the loaded modules.')
 	subparsers.add_parser("init", help='Initialize or setup the project environment.')
 	subparsers.add_parser("clean", help='Clean the project environment from build artifacts.')
 	parserBuild = subparsers.add_parser("build", help='Build the project.')
 	parserBuild.add_argument("type", action='store', nargs='?', help='Build type.')
 
-	subparsers.add_parser("update", help='Update the tool to the latest version available.')
+	parserUpdate = subparsers.add_parser("update", help='Update the tool to the latest version available.')
+	parserUpdate.add_argument("-f", "--force", action="store_true", dest="force", default=False, help="If set, it will update even if the last version is detected.")
 
 	args = parser.parse_args()
 

@@ -1,1 +1,1 @@
-# build
+# Application helper script
