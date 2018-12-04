@@ -8,6 +8,9 @@ import imp
 import subprocess
 import shutil
 import argparse
+import datetime
+import timeit
+import multiprocessing
 
 GIT_REPOSITORY = "https://github.com/blaizard/irapp.git"
 EXECUTABLE_PATH = os.path.realpath(__file__)
@@ -39,7 +42,7 @@ def loadDependencies():
 """
 Read the configruation file and create it if it does not exists.
 """
-def readConfig(path):
+def readConfig(args):
 	global lib
 
 	# Read the dependencies
@@ -54,22 +57,32 @@ def readConfig(path):
 
 	# Read the configuration
 	try:
-		f = open(path, "r")
+		f = open(args.configPath, "r")
 		with f:
 			try:
 				configUser = json.load(f)
 				config.update(configUser)
 			except Exception as e:
-				lib.error("Could not parse configuration file '%s'; %s" % (str(path), str(e)))
+				lib.error("Could not parse configuration file '%s'; %s" % (str(args.configPath), str(e)))
 				sys.exit(1)
 	except IOError:
-		lib.warning("Could not open configuration file '%s', using default" % (str(path)))
+		lib.warning("Could not open configuration file '%s', using default" % (str(args.configPath)))
+
+	# Add the required module if to the type list
+	requiredModuleList = args.modules.split(",") if args.modules else []
+	for moduleId in requiredModuleList:
+		if moduleId not in config["types"]:
+			config["types"].append(moduleId)
 
 	# Map and remove unsupported modules
 	typeList = []
 	for moduleId in config["types"]:
+		isRequired = (moduleId in requiredModuleList)
 		if moduleId not in modules:
-			logError("Module %s is unknown" % (moduleId))
+			if isRequired:
+				lib.error("Unknown required module '%s', abort" % (moduleId))
+				sys.exit(1)
+			lib.warning("Unknown module '%s', ignoring" % (moduleId))
 			continue
 		moduleClass = modules[moduleId]
 		# Add module only if it checks correctly
@@ -80,6 +93,9 @@ def readConfig(path):
 			defaultConfig = moduleClass.config()
 			defaultConfig.update(config)
 			config = defaultConfig
+		elif isRequired:
+			lib.error("Required module '%s' is not supported by this project, abort" % (moduleId))
+			sys.exit(1)
 	config["types"] = typeList
 
 	# Initialize all the classes
@@ -96,7 +112,7 @@ Entry point for all action mapped to the supported and enabled modules.
 """
 def action(args):
 	# Read the configuration
-	config = readConfig(args.configPath)
+	config = readConfig(args)
 
 	lib.info("Running command '%s' in '%s'" % (str(args.command), str(config["root"])))
 	for moduleId in config["types"]:
@@ -115,28 +131,69 @@ Print information regarding the program and loaded modules
 """
 def info(args):
 	# Read the configuration
-	config = readConfig(args.configPath)
+	config = readConfig(args)
 
 	lib.info("Hash: %s" % (str(getCurrentHash())))
 	for moduleId in config["types"]:
 		config["pimpl"][moduleId].info()
 
+lock = multiprocessing.Lock()
+def runWorker(command, hideOutput = True):
+	global lock
+
+	start = timeit.default_timer()
+	try:
+		lib.shell(command, captureStdout=hideOutput)
+	except BaseException as e:
+		with lock:
+			print(e)
+			raise Exception()
+	return (timeit.default_timer() - start)
+
 """
 Run the program specified
 """
 def run(args):
-	# Read the configuration
-	config = readConfig(args.configPath)
+	global lock
 
-	lib.info("Running command '%s'" % (" ".join(args.args)))
+	# Read the configuration
+	config = readConfig(args)
+
+	lib.info("Running command '%s'%s" % (" ".join(args.args), " in endless mode" if args.endless else ""))
 
 	for moduleId in config["types"]:
 		config["pimpl"][moduleId].runPre(*args.args)
 
+	# Create the pool of workers
+	workerList = [None for i in range(args.nbJobs)]
+	workerPool = multiprocessing.Pool(args.nbJobs)
+
+	totalTimeS = 0
+	nbIterations = 0
+	hideOutput = args.endless and not args.verbose
 	while True:
-		lib.shell(args.args)
+
+		if hideOutput:
+			with lock:
+				sys.stdout.write("\rTime: %s, %i iteration(s), average %s, %i job(s)" % (str(datetime.datetime.now()), nbIterations, str(totalTimeS / nbIterations) + "s" if nbIterations else "?", args.nbJobs))
+				sys.stdout.flush()
+
+		# Fill the worker pool
+		for i in range(args.nbJobs):
+			if not workerList[i]:
+				workerList[i] = workerPool.apply_async(runWorker, (args.args, hideOutput,))
+			elif workerList[i].ready():
+				if workerList[i].successful():
+					totalTimeS += workerList[i].get()
+					nbIterations += 1
+					workerList[i] = None
+				else:
+					workerPool.terminate()
+					print("")
+					sys.exit(1)
+
 		if not args.endless:
-			break
+			break		
 
 	for moduleId in config["types"]:
 		config["pimpl"][moduleId].runPost(*args.args)
@@ -260,14 +317,19 @@ class lib:
 				stderr=(subprocess.PIPE if captureStdout else subprocess.STDOUT))
 
 		output = []
-		if proc.stdout:
-			for line in iter(proc.stdout.readline, b''):
-				line = line.rstrip().decode('utf-8')
-				output.append(line)
+		exception = False
+		try:
+			if proc.stdout:
+				for line in iter(proc.stdout.readline, b''):
+					line = line.rstrip().decode('utf-8')
+					output.append(line)
+			out, error = proc.communicate()
+		except BaseException as e:
+			exception = e
 
-		out, error = proc.communicate()
-		if proc.returncode != 0:
-			message = "Fail to execute '%s' in '%s' (errno=%i)" % (" ".join(command), str(cwd), proc.returncode)
+		if (proc.returncode != 0) or exception:
+			extra = str(exception.__class__.__name__) if exception else "errno=%s" % (str(proc.returncode))
+			message = "Fail to execute '%s' in '%s' (%s)" % (" ".join(command), str(cwd), extra)
 			if ignoreError:
 				lib.warning(message)
 				output = []
@@ -295,13 +357,16 @@ if __name__ == "__main__":
 	}
 
 	parser = argparse.ArgumentParser(description = "Application helper script.")
-	parser.add_argument('--config', action="store", dest="configPath", default=DEFAULT_CONFIG_FILE, help="Path of the build definition (default=%s)." % (DEFAULT_CONFIG_FILE))
-	parser.add_argument('--version', action='version', version="%s hash: %s" % (os.path.basename(__file__), str(getCurrentHash())))
+	parser.add_argument("-c", "--config", action="store", dest="configPath", default=DEFAULT_CONFIG_FILE, help="Path of the build definition (default=%s)." % (DEFAULT_CONFIG_FILE))
+	parser.add_argument("-v", "--version", action='version', version="%s hash: %s" % (os.path.basename(__file__), str(getCurrentHash())))
+	parser.add_argument("-m", "--modules", action='store', dest="modules", default="", help="Enforce the use of specific modules (comma separated). If one of the given module fails to setup, the program returns with an error.")
 
 	subparsers = parser.add_subparsers(dest="command", help='List of available commands.')
 
 	parserRun = subparsers.add_parser("run", help='Execute the specified commmand.')
 	parserRun.add_argument("-e", "--endless", action="store_true", dest="endless", default=False, help="Run the command endlessly (until it fails).")
+	parserRun.add_argument("-v", "--verbose", action="store_true", dest="verbose", default=False, help="Force printing the output while running the command.")
+	parserRun.add_argument("-j", "--jobs", type=int, action="store", dest="nbJobs", default=1, help="Number of jobs to run in parallel.")
 	parserRun.add_argument("args", nargs=argparse.REMAINDER, help='Extra arguments to be passed to the command executed.')
 
 	subparsers.add_parser("info", help='Display information about the script and the loaded modules.')

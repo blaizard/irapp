@@ -5,6 +5,7 @@ import subprocess
 import sys
 import re
 import os
+import multiprocessing
 
 # ---- Logging methods --------------------------------------------------------
 
@@ -29,6 +30,13 @@ def which(executable):
 		return None
 	return path[0]
 
+class ShellError(Exception):
+	def __init__(self, message, output):
+		super(ShellError, self).__init__(message)
+		self.output = output
+	def __str__(self):
+		return "%s\n%s" % ("\n".join(self.output), self.message)
+
 """
 Execute a shell command in a specific directory.
 If it fails, it will throw.
@@ -38,21 +46,27 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False):
 			stderr=(subprocess.PIPE if captureStdout else subprocess.STDOUT))
 
 	output = []
-	if proc.stdout:
-		for line in iter(proc.stdout.readline, b''):
-			line = line.rstrip().decode('utf-8')
-			output.append(line)
+	exception = False
+	try:
 
-	out, error = proc.communicate()
-	if proc.returncode != 0:
-		message = "Fail to execute '%s' in '%s' (errno=%i)" % (" ".join(command), str(cwd), proc.returncode)
+		if proc.stdout:
+			for line in iter(proc.stdout.readline, b''):
+				line = line.rstrip().decode('utf-8')
+				output.append(line)
+
+		out, error = proc.communicate()
+
+	except BaseException as e:
+		exception = e
+
+	if (proc.returncode != 0) or exception:
+		extra = str(exception.__class__.__name__) if exception else "errno=%s" % (str(proc.returncode))
+		message = "Fail to execute '%s' in '%s' (%s)" % (" ".join(command), str(cwd), extra)
 		if ignoreError:
 			warning(message)
 			output = []
 		else:
-			for line in output:
-				print(line)
-			raise Exception(message)
+			raise ShellError(message, output)
 
 	return output
 
