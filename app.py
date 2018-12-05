@@ -138,7 +138,7 @@ def info(args):
 		config["pimpl"][moduleId].info()
 
 lock = multiprocessing.Lock()
-def runWorker(command, hideOutput = True):
+def runWorker(command, hideOutput, iterationId):
 	global lock
 
 	start = timeit.default_timer()
@@ -148,7 +148,7 @@ def runWorker(command, hideOutput = True):
 		with lock:
 			print(e)
 			raise Exception()
-	return (timeit.default_timer() - start)
+	return (timeit.default_timer() - start), iterationId
 
 """
 Run the program specified
@@ -159,44 +159,106 @@ def run(args):
 	# Read the configuration
 	config = readConfig(args)
 
-	lib.info("Running command '%s'%s" % (" ".join(args.args), " in endless mode" if args.endless else ""))
+	# Build the list of commands to be executed
+	commandList = [cmd.split() for cmd in args.commandList] + ([args.args] if args.args else [])
 
+	# Number of iterations to be performed (0 for endless)
+	totalIterations = args.iterations if args.iterations else (0 if args.endless else (0 if args.time else 1))
+
+	optionsStrList = []
+	if totalIterations > 1:
+		optionsStrList.append("%i iterations" % (totalIterations))
+	elif totalIterations == 0:
+		optionsStrList.append("endless mode")
+	if args.time:
+		optionsStrList.append("%is" % (args.time))
+	optionsStr = " [%s]" % (", ".join(optionsStrList)) if len(optionsStrList) else ""
+
+	if len(commandList) == 1:
+		lib.info("Running command '%s'%s" % (" ".join(commandList[0]), optionsStr))
+	elif len(commandList) > 1:
+		lib.info("Running commands %s%s" % (", ".join([("'" + " ".join(cmd) + "'") for cmd in commandList]), optionsStr))
+	else:
+		lib.error("No command was executed")
+		sys.exit(1)
+
+	# Pre run the supported modules
 	for moduleId in config["types"]:
-		config["pimpl"][moduleId].runPre(*args.args)
+		config["pimpl"][moduleId].runPre(commandList)
 
 	# Create the pool of workers
 	workerList = [None for i in range(args.nbJobs)]
 	workerPool = multiprocessing.Pool(args.nbJobs)
 
+	hideOutput = (totalIterations != 1) and not args.verbose
+	startingTime = datetime.datetime.now()
 	totalTimeS = 0
 	nbIterations = 0
-	hideOutput = args.endless and not args.verbose
+	nbWorkers = 0
+	commandIndex = 0
+	curIteration = 0
+	iterations = {}
 	while True:
+
+		# Fill the worker pool and update the number of workers currently working
+		nbWorkers = 0
+		for i in range(args.nbJobs):
+
+			# If a worker is registered
+			if workerList[i]:
+				if workerList[i].ready():
+					if workerList[i].successful():
+						# The worker is completed
+						workerElpasedTimeS, workerIteration = workerList[i].get()
+						workerList[i] = None
+						# Increase the iteration number and check if one full iteration is completed
+						iterations[workerIteration] = ({"nb": iterations[workerIteration]["nb"] + 1, "time": iterations[workerIteration]["time"] + workerElpasedTimeS}) if workerIteration in iterations else {"nb": 1, "time": workerElpasedTimeS}
+						if iterations[workerIteration]["nb"] == len(commandList):
+							nbIterations += 1
+							totalTimeS += iterations[workerIteration]["time"]
+							iterations.pop(workerIteration)
+					else:
+						# One of the worker failed
+						workerPool.terminate()
+						print("")
+						sys.exit(1)
+				else:
+					nbWorkers += 1
+
+			# If not registered, add it
+			if not workerList[i]:
+				workerList[i] = workerPool.apply_async(runWorker, (commandList[commandIndex], hideOutput, curIteration))
+				# Increase the command index and the interation
+				commandIndex += 1
+				if commandIndex == len(commandList):
+					commandIndex = 0
+					curIteration += 1
+				nbWorkers += 1
 
 		if hideOutput:
 			with lock:
-				sys.stdout.write("\rTime: %s, %i iteration(s), average %s, %i job(s)" % (str(datetime.datetime.now()), nbIterations, str(totalTimeS / nbIterations) + "s" if nbIterations else "?", args.nbJobs))
+				sys.stdout.write("\rTime: %s, %i iteration(s), average %s, %i job(s)" % (
+						str(datetime.datetime.now() - startingTime),
+						nbIterations,
+						str(float("%.6f" % (totalTimeS / nbIterations))) + "s" if nbIterations else "?",
+						nbWorkers))
 				sys.stdout.flush()
 
-		# Fill the worker pool
-		for i in range(args.nbJobs):
-			if not workerList[i]:
-				workerList[i] = workerPool.apply_async(runWorker, (args.args, hideOutput,))
-			elif workerList[i].ready():
-				if workerList[i].successful():
-					totalTimeS += workerList[i].get()
-					nbIterations += 1
-					workerList[i] = None
-				else:
-					workerPool.terminate()
-					print("")
-					sys.exit(1)
+		# If time reached its limit
+		if args.time and (datetime.datetime.now() - startingTime).total_seconds() > args.time:
+			break
 
-		if not args.endless:
-			break		
+		# If the number of iterations reached its limit
+		if totalIterations and (nbIterations >= totalIterations):
+			break
 
+	# Ensure the workers are terminated
+	workerPool.terminate()
+	print("")
+
+	# Post run the supported modules
 	for moduleId in config["types"]:
-		config["pimpl"][moduleId].runPost(*args.args)
+		config["pimpl"][moduleId].runPost(commandList)
 
 """
 Return the current hash or None if not available
@@ -367,6 +429,9 @@ if __name__ == "__main__":
 	parserRun.add_argument("-e", "--endless", action="store_true", dest="endless", default=False, help="Run the command endlessly (until it fails).")
 	parserRun.add_argument("-v", "--verbose", action="store_true", dest="verbose", default=False, help="Force printing the output while running the command.")
 	parserRun.add_argument("-j", "--jobs", type=int, action="store", dest="nbJobs", default=1, help="Number of jobs to run in parallel.")
+	parserRun.add_argument("-c", "--cmd", action="append", dest="commandList", default=[], help="Command to be executed. More than one command can be executed simultaneously sequentially. If combined with --jobs the commands will be executed simultaneously.")
+	parserRun.add_argument("-i", "--iterations", type=int, action="store", dest="iterations", default=0, help="Number of iterations to be performed.")
+	parserRun.add_argument("-t", "--time", type=int, action="store", dest="time", default=0, help="Run the commands for a specific amount of time (in seconds).")
 	parserRun.add_argument("args", nargs=argparse.REMAINDER, help='Extra arguments to be passed to the command executed.')
 
 	subparsers.add_parser("info", help='Display information about the script and the loaded modules.')
