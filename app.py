@@ -10,6 +10,10 @@ import shutil
 import argparse
 import datetime
 import timeit
+import math
+import Queue
+import threading
+import time
 import multiprocessing
 
 GIT_REPOSITORY = "https://github.com/blaizard/irapp.git"
@@ -52,6 +56,7 @@ def readConfig(args):
 		"types": types,
 		"root": EXECUTABLE_DIRECTORY_PATH,
 		"assets": ASSETS_DIRECTORY_PATH,
+		"parallelism": multiprocessing.cpu_count(),
 		"pimpl": {}
 	}
 
@@ -125,6 +130,8 @@ def action(args):
 			config["pimpl"][moduleId].build(args.type)
 		elif args.command == "clean":
 			config["pimpl"][moduleId].clean()
+		elif args.command == "deploy":
+			config["pimpl"][moduleId].deploy()
 
 """
 Print information regarding the program and loaded modules
@@ -137,24 +144,32 @@ def info(args):
 	for moduleId in config["types"]:
 		config["pimpl"][moduleId].info()
 
-lock = multiprocessing.Lock()
-def runWorker(command, hideOutput, iterationId):
-	global lock
-
-	start = timeit.default_timer()
-	try:
-		lib.shell(command, captureStdout=hideOutput)
-	except BaseException as e:
-		with lock:
-			print(e)
-			raise Exception()
-	return (timeit.default_timer() - start), iterationId
+def runWorker(command, hideOutput, queue, signal):
+	lib.shell(command, captureStdout=hideOutput, queue=queue, signal=signal)
 
 """
 Run the program specified
 """
 def run(args):
-	global lock
+
+	# Custom process class to control process pool
+	class Thread(threading.Thread):
+		def __init__(self, *args, **kwargs):
+			threading.Thread.__init__(self, *args, **kwargs)
+			self._threadException = None
+
+		def run(self):
+			try:
+				threading.Thread.run(self)
+			except Exception as e:
+				self._threadException = e
+
+		def clearException(self):
+			self._threadException = None
+
+		@property
+		def exception(self):
+			return self._threadException
 
 	# Read the configuration
 	config = readConfig(args)
@@ -163,15 +178,28 @@ def run(args):
 	commandList = [cmd.split() for cmd in args.commandList] + ([args.args] if args.args else [])
 
 	# Number of iterations to be performed (0 for endless)
-	totalIterations = args.iterations if args.iterations else (0 if args.endless else (0 if args.time else 1))
+	totalIterations = args.iterations if args.iterations else (0 if args.endless else (0 if args.duration else 1))
+
+	# Calculate the timeout
+	isAutoTimeout = True if args.timeout < 0 else False
+	timeout = 0 if args.timeout < 0 else args.timeout
+
+	# Define the number of jobs
+	nbJobs = args.nbJobs if args.nbJobs > 0 else config["parallelism"]
 
 	optionsStrList = []
+	if nbJobs > 1:
+		optionsStrList.append("%i jobs" % (nbJobs))
 	if totalIterations > 1:
 		optionsStrList.append("%i iterations" % (totalIterations))
 	elif totalIterations == 0:
 		optionsStrList.append("endless mode")
-	if args.time:
-		optionsStrList.append("%is" % (args.time))
+	if args.duration:
+		optionsStrList.append("%is" % (args.duration))
+	if isAutoTimeout:
+		optionsStrList.append("timeout auto")
+	elif timeout > 0:
+		optionsStrList.append("%is timeout" % (timeout))
 	optionsStr = " [%s]" % (", ".join(optionsStrList)) if len(optionsStrList) else ""
 
 	if len(commandList) == 1:
@@ -187,74 +215,137 @@ def run(args):
 		config["pimpl"][moduleId].runPre(commandList)
 
 	# Create the pool of workers
-	workerList = [None for i in range(args.nbJobs)]
-	workerPool = multiprocessing.Pool(args.nbJobs)
+	workerList = [None for i in range(nbJobs)]
+	workerContext = [None] * nbJobs
+	workerErrors = {}
 
 	hideOutput = (totalIterations != 1) and not args.verbose
 	startingTime = datetime.datetime.now()
+	startingTimeIteration = datetime.datetime.now()
 	totalTimeS = 0
 	nbIterations = 0
 	nbWorkers = 0
 	commandIndex = 0
 	curIteration = 0
 	iterations = {}
-	while True:
 
-		# Fill the worker pool and update the number of workers currently working
-		nbWorkers = 0
-		for i in range(args.nbJobs):
+	try:
 
-			# If a worker is registered
-			if workerList[i]:
-				if workerList[i].ready():
-					if workerList[i].successful():
+		while not bool(workerErrors):
+
+			# Fill the worker pool and update the number of workers currently working
+			nbWorkers = 0
+			for i in range(nbJobs):
+
+				# If a worker is registered
+				if workerList[i]:
+					workerElpasedTimeS = timeit.default_timer() - workerList[i]["time"]
+
+					# Check if it has timed out
+					if timeout and workerElpasedTimeS > timeout:
+						workerErrors[i] = ["Timeout (%is) on '%s'" % (timeout, workerList[i]["command"])]
+						raise Exception("<<<< Timeout (%is) >>>>" % (timeout))
+
+					elif not workerList[i]["worker"].is_alive():
 						# The worker is completed
-						workerElpasedTimeS, workerIteration = workerList[i].get()
+						if workerList[i]["worker"].exception:
+							workerErrors[i] = [str(workerList[i]["worker"].exception)]
+							raise Exception("<<<< FAILURE >>>>")
+
+						workerList[i]["worker"].join()
+						workerIteration = workerList[i]["iterationId"]
 						workerList[i] = None
+					
 						# Increase the iteration number and check if one full iteration is completed
 						iterations[workerIteration] = ({"nb": iterations[workerIteration]["nb"] + 1, "time": iterations[workerIteration]["time"] + workerElpasedTimeS}) if workerIteration in iterations else {"nb": 1, "time": workerElpasedTimeS}
 						if iterations[workerIteration]["nb"] == len(commandList):
 							nbIterations += 1
 							totalTimeS += iterations[workerIteration]["time"]
+							startingTimeIteration = datetime.datetime.now()
 							iterations.pop(workerIteration)
 					else:
-						# One of the worker failed
-						workerPool.terminate()
-						print("")
-						sys.exit(1)
-				else:
+						nbWorkers += 1
+
+				# If not registered, add it
+				if not workerList[i] and (totalIterations == 0 or curIteration < totalIterations):
+					workerContext[i] = Queue.Queue()
+					signal = threading.Event()
+					workerList[i] = {
+						"command": " ".join(commandList[commandIndex]),
+						"worker": Thread(target=runWorker, args=(commandList[commandIndex], hideOutput, workerContext[i] if hideOutput else None, signal)),
+						"time": timeit.default_timer(),
+						"iterationId": curIteration,
+						"signal": signal
+					}
+					workerList[i]["worker"].start()
+					# Increase the command index and the interation
+					commandIndex += 1
+					if commandIndex == len(commandList):
+						commandIndex = 0
+						curIteration += 1
 					nbWorkers += 1
 
-			# If not registered, add it
-			if not workerList[i]:
-				workerList[i] = workerPool.apply_async(runWorker, (commandList[commandIndex], hideOutput, curIteration))
-				# Increase the command index and the interation
-				commandIndex += 1
-				if commandIndex == len(commandList):
-					commandIndex = 0
-					curIteration += 1
-				nbWorkers += 1
-
-		if hideOutput:
-			with lock:
-				sys.stdout.write("\rTime: %s, %i iteration(s), average %s, %i job(s)" % (
+			if hideOutput:
+				sys.stdout.write("\rTime: %s, %i iteration(s), average %s, timeout %s, %i job(s)" % (
 						str(datetime.datetime.now() - startingTime),
 						nbIterations,
 						str(float("%.6f" % (totalTimeS / nbIterations))) + "s" if nbIterations else "?",
+						("%is" % (timeout)) if timeout else "-",
 						nbWorkers))
 				sys.stdout.flush()
 
-		# If time reached its limit
-		if args.time and (datetime.datetime.now() - startingTime).total_seconds() > args.time:
-			break
+			# Update the timeout, if auto timeout is selected
+			if isAutoTimeout and nbIterations:
+				timeout = math.ceil(totalTimeS / nbIterations * 5)
 
-		# If the number of iterations reached its limit
-		if totalIterations and (nbIterations >= totalIterations):
-			break
+			# If time reached its limit, break
+			if args.duration and (datetime.datetime.now() - startingTime).total_seconds() > args.duration:
+				break
+
+			# If the number of iterations reached its limit, break
+			if totalIterations and (nbIterations >= totalIterations):
+				break
+
+	except (KeyboardInterrupt, SystemExit) as e:
+		print("")
+		lib.error("<<<< Keyboard Interrupt >>>>")
+
+	except BaseException as e:
+		print("")
+		lib.error(str(e))
+
+	else:
+		print("")
 
 	# Ensure the workers are terminated
-	workerPool.terminate()
-	print("")
+	# Set the signal to the thread and wait until it is completed
+	sys.stdout.write("Kill pending jobs... (can take up to 10s)\r")
+	sys.stdout.flush()
+	for i in range(nbJobs):
+		if workerList[i]:
+			workerList[i]["signal"].set()
+	for i in range(nbJobs):
+		if workerList[i] and workerList[i]["worker"].is_alive():
+			workerList[i]["worker"].clearException()
+			errorMsg = None
+			try:
+				workerList[i]["worker"].join(10)
+				errorMsg = workerList[i]["worker"].exception
+			except:
+				errorMsg = "Cannot terminate process"
+			if errorMsg:
+				workerErrors[i] = workerErrors[i] if i in workerErrors else []
+				workerErrors[i].append(str(errorMsg))
+
+	if bool(workerErrors):
+		for i, errorList in workerErrors.items():
+			if workerList[i]:
+				# Print the content of the log
+				lib.error("---- (worker #%i) -------------------------------------------------------------" % (i))
+				for line in list(workerContext[i].queue):
+					print(line)
+				lib.error("Failure cause: %s" % (", ".join(errorList)))
+		sys.exit(1)
 
 	# Post run the supported modules
 	for moduleId in config["types"]:
@@ -374,33 +465,63 @@ class lib:
 	If it fails, it will throw.
 	"""
 	@staticmethod
-	def shell(command, cwd=".", captureStdout=False, ignoreError=False):
-		proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=(subprocess.PIPE if captureStdout else None),
-				stderr=(subprocess.PIPE if captureStdout else subprocess.STDOUT))
+	def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, signal=None):
 
-		output = []
-		exception = False
-		try:
-			if proc.stdout:
-				for line in iter(proc.stdout.readline, b''):
-					line = line.rstrip().decode('utf-8')
-					output.append(line)
-			out, error = proc.communicate()
-		except BaseException as e:
-			exception = e
+		def enqueueOutput(out, queue, signal):
+			for line in iter(out.readline, b''):
+				queue.put(line.rstrip().decode('utf-8'))
+			out.close()
+			signal.set()
 
-		if (proc.returncode != 0) or exception:
-			extra = str(exception.__class__.__name__) if exception else "errno=%s" % (str(proc.returncode))
-			message = "Fail to execute '%s' in '%s' (%s)" % (" ".join(command), str(cwd), extra)
+		isReturnStdout = True if captureStdout and not queue else False
+
+		proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=(subprocess.PIPE if captureStdout or queue else None),
+			stderr=(subprocess.STDOUT if captureStdout or queue else None))
+
+		if not queue:
+			queue = Queue.Queue()
+
+		if not signal:
+			signal = threading.Event()
+
+		# Wait until a signal is raised or until the the process is terminated
+		if captureStdout:
+			outputThread = threading.Thread(target=enqueueOutput, args=(proc.stdout, queue, signal))
+			outputThread.start()
+			signal.wait()
+		else:
+			while proc.poll() is None:
+				time.sleep(0.1)
+				if signal.is_set():
+					break
+
+		errorMsgList = []
+
+		# Kill the process (max 5s)
+		if proc.poll() is None:
+			def processTerminateTimeout():
+				proc.kill()
+				errorMsgList.append("stalled")
+			timer = threading.Timer(5, processTerminateTimeout)
+			try:
+				timer.start()
+				proc.terminate()
+				proc.wait()
+			finally:
+				timer.cancel()
+
+		if proc.returncode != 0:
+			errorMsgList.append("return.code=%s" % (str(proc.returncode)))
+
+		if len(errorMsgList):
+			message = "Failed to execute '%s' in '%s': %s" % (" ".join(command), str(cwd), ", ".join(errorMsgList))
 			if ignoreError:
 				lib.warning(message)
-				output = []
 			else:
-				for line in output:
-					print(line)
 				raise Exception(message)
 
-		return output
+		# Build the output list
+		return list(queue.queue) if isReturnStdout else []
 
 # -----------------------------------------------------------------------------
 
@@ -414,6 +535,7 @@ if __name__ == "__main__":
 		"init": action,
 		"clean": action,
 		"build": action,
+		"deploy": action,
 		"run": run,
 		"update": update
 	}
@@ -428,10 +550,11 @@ if __name__ == "__main__":
 	parserRun = subparsers.add_parser("run", help='Execute the specified commmand.')
 	parserRun.add_argument("-e", "--endless", action="store_true", dest="endless", default=False, help="Run the command endlessly (until it fails).")
 	parserRun.add_argument("-v", "--verbose", action="store_true", dest="verbose", default=False, help="Force printing the output while running the command.")
-	parserRun.add_argument("-j", "--jobs", type=int, action="store", dest="nbJobs", default=1, help="Number of jobs to run in parallel.")
+	parserRun.add_argument("-j", "--jobs", type=int, action="store", dest="nbJobs", default=1, help="Number of jobs to run in parallel. If 0 is used, the system will automatically pick the number of jobs based on the number of core.")
 	parserRun.add_argument("-c", "--cmd", action="append", dest="commandList", default=[], help="Command to be executed. More than one command can be executed simultaneously sequentially. If combined with --jobs the commands will be executed simultaneously.")
 	parserRun.add_argument("-i", "--iterations", type=int, action="store", dest="iterations", default=0, help="Number of iterations to be performed.")
-	parserRun.add_argument("-t", "--time", type=int, action="store", dest="time", default=0, help="Run the commands for a specific amount of time (in seconds).")
+	parserRun.add_argument("-d", "--duration", type=int, action="store", dest="duration", default=0, help="Run the commands for a specific amount of time (in seconds).")
+	parserRun.add_argument("-t", "--timeout", type=int, action="store", dest="timeout", default=-1, help="Timeout (in seconds) until the iteration should be considered as invalid. If set to -1, an automatic timeout is set, calculated based on the previous run. If set to 0, no timeout is set.")
 	parserRun.add_argument("args", nargs=argparse.REMAINDER, help='Extra arguments to be passed to the command executed.')
 
 	subparsers.add_parser("info", help='Display information about the script and the loaded modules.')
@@ -442,6 +565,8 @@ if __name__ == "__main__":
 
 	parserUpdate = subparsers.add_parser("update", help='Update the tool to the latest version available.')
 	parserUpdate.add_argument("-f", "--force", action="store_true", dest="force", default=False, help="If set, it will update even if the last version is detected.")
+
+	parserDeploy = subparsers.add_parser("deploy", help='Deploy the application.')
 
 	args = parser.parse_args()
 

@@ -46,10 +46,13 @@ class Jenkins(lib.Module):
 		for name, options in self.config["buildConfigs"].items():
 			updatedBuildConfigs[name] = {
 				"valgrind": False,
-				"tests": True
+				"tests": True,
+				"coverage": False
 			}
 			if options["default"]:
 				updatedBuildConfigs[name]["valgrind"] = True
+			if options["coverage"]:
+				updatedBuildConfigs[name]["coverage"] = True
 			updatedBuildConfigs[name].update(options)
 
 		jenkinsfileTemplate = lib.Template(jenkinsfileStr)
@@ -59,7 +62,8 @@ class Jenkins(lib.Module):
 			"staticAnalyzerIgnore": self.config["staticAnalyzerIgnore"],
 			"buildConfigs": updatedBuildConfigs,
 			"tests": self.config["tests"],
-			"valgrindSuppPath": valgrindSuppPath
+			"valgrindSuppPath": valgrindSuppPath,
+			"coverageDir": os.path.join(self.config["buildDir"], "coverage")
 		})
 
 		# Save the Jenkins file

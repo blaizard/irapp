@@ -5,7 +5,9 @@ import subprocess
 import sys
 import re
 import os
-import multiprocessing
+import threading
+import Queue
+import time
 
 # ---- Logging methods --------------------------------------------------------
 
@@ -30,45 +32,71 @@ def which(executable):
 		return None
 	return path[0]
 
-class ShellError(Exception):
-	def __init__(self, message, output):
-		super(ShellError, self).__init__(message)
-		self.output = output
-	def __str__(self):
-		return "%s\n%s" % ("\n".join(self.output), self.message)
-
 """
 Execute a shell command in a specific directory.
 If it fails, it will throw.
 """
-def shell(command, cwd=".", captureStdout=False, ignoreError=False):
-	proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=(subprocess.PIPE if captureStdout else None),
-			stderr=(subprocess.PIPE if captureStdout else subprocess.STDOUT))
+def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, signal=None):
 
-	output = []
-	exception = False
-	try:
+	def enqueueOutput(out, queue, signal):
+		try:
+			for line in iter(out.readline, b''):
+				queue.put(line.rstrip().decode('utf-8'))
+		except:
+			pass
+		out.close()
+		signal.set()
 
-		if proc.stdout:
-			for line in iter(proc.stdout.readline, b''):
-				line = line.rstrip().decode('utf-8')
-				output.append(line)
+	isReturnStdout = True if captureStdout and not queue else False
 
-		out, error = proc.communicate()
+	proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=(subprocess.PIPE if captureStdout or queue else None),
+		stderr=(subprocess.STDOUT if captureStdout or queue else None))
 
-	except BaseException as e:
-		exception = e
+	if not queue:
+		queue = Queue.Queue()
 
-	if (proc.returncode != 0) or exception:
-		extra = str(exception.__class__.__name__) if exception else "errno=%s" % (str(proc.returncode))
-		message = "Fail to execute '%s' in '%s' (%s)" % (" ".join(command), str(cwd), extra)
+	if not signal:
+		signal = threading.Event()
+
+	# Wait until a signal is raised or until the the process is terminated
+	if captureStdout:
+		outputThread = threading.Thread(target=enqueueOutput, args=(proc.stdout, queue, signal))
+		outputThread.start()
+		signal.wait()
+	else:
+		while proc.poll() is None:
+			time.sleep(0.1)
+			if signal.is_set():
+				break
+
+	errorMsgList = []
+
+	# Kill the process (max 5s)
+	stoppedBySignal = True if proc.poll() is None else False
+	if stoppedBySignal:
+		def processTerminateTimeout():
+			proc.kill()
+			errorMsgList.append("stalled")
+		timer = threading.Timer(5, processTerminateTimeout)
+		try:
+			timer.start()
+			proc.terminate()
+			proc.wait()
+		finally:
+			timer.cancel()
+
+	if not stoppedBySignal and proc.returncode != 0:
+		errorMsgList.append("return.code=%s" % (str(proc.returncode)))
+
+	if len(errorMsgList):
+		message = "Failed to execute '%s' in '%s': %s" % (" ".join(command), str(cwd), ", ".join(errorMsgList))
 		if ignoreError:
 			warning(message)
-			output = []
 		else:
-			raise ShellError(message, output)
+			raise Exception(message)
 
-	return output
+	# Build the output list
+	return list(queue.queue) if isReturnStdout else []
 
 """
 Process a template with specific values.
@@ -125,9 +153,12 @@ class Template:
 		condition = eval(conditionStr)
 		return bool(condition)
 
-	def process(self, args):
+	def process(self, args, removeEmptyLines = True):
 		output = self.processInternals(self.template, args)
-		return output.replace("%%", "%")
+		output = output.replace("%%", "%")
+		if removeEmptyLines:
+			output = "\n".join([line for line in output.split('\n') if line.strip() != ''])
+		return output
 
 	def processInternals(self, template, args):
 
@@ -149,7 +180,6 @@ class Template:
 			match = self.patternIf.match(operation)
 			if match:
 				if (not ignoreOutput) and self.evalCondition(args, match.group(1)):
-					#(self.getValue(args, match.group(1))):
 					output += self.processInternals(template[index:len(template)], args)
 				ignoreOutput += 1
 				continue
@@ -197,7 +227,7 @@ class Template:
 			match = self.patternSet.match(operation)
 			if match:
 				if not ignoreOutput:
-					output += self.getValue(args, match.group(0))
+					output += str(self.getValue(args, match.group(0)))
 				continue
 
 			error("Template operation '%s' is not valid." % (operation))
@@ -285,8 +315,11 @@ class Module:
 	def build(self, *args):
 		pass
 
-	def runPre(self, *args):
+	def runPre(self, commandList):
 		pass
 
-	def runPost(self, *args):
+	def runPost(self, commandList):
+		pass
+
+	def deploy(self, *args):
 		pass

@@ -151,6 +151,7 @@ class CMake(lib.Module):
 					if lib.which("lcov"):
 						self.copyAssetTo(".", ".lcovrc")
 						commandList.extend(["-DCMAKE_CXX_FLAGS=--coverage", "-DCMAKE_C_FLAGS=--coverage"])
+						lib.info("Adding compilation flag '--coverage'")
 					else:
 						isCoverageError = True
 
@@ -232,7 +233,7 @@ class CMake(lib.Module):
 			self.clean()
 			self.setDefaultBuildType(buildType)
 
-		lib.shell(["cmake", "--build", os.path.join(buildDirPath, buildType), "--", "-j3"], cwd=self.config["root"])
+		lib.shell(["cmake", "--build", os.path.join(buildDirPath, buildType), "--", "-j%i" % (self.config["parallelism"])], cwd=self.config["root"])
 
 	def info(self, *args):
 
@@ -249,7 +250,7 @@ class CMake(lib.Module):
 
 			lib.info("%20s %9s %8s %8s %10s %s" % (buildType, isDefaultBuildType, self.getType(buildType), self.getCompiler(buildType), hasCoverage, str(buildPath)))
 
-	def runPre(self, *args):
+	def runPre(self, commandList):
 
 		buildType = self.getDefaultBuildType()
 		if self.hasCoverage(buildType):
@@ -279,9 +280,7 @@ class CMake(lib.Module):
 			lib.shell(["lcov", "--capture", "--initial", "--directory", "%s" % (buildDir),
 					"--output-file", os.path.join(coverageDir, "lcov_base.info"), "-q"], cwd=self.config["root"])
 
-			#exit(0)
-
-	def runPost(self, *args):
+	def runPost(self, commandList):
 
 		buildType = self.getDefaultBuildType()
 		if self.hasCoverage(buildType):
@@ -304,7 +303,7 @@ class CMake(lib.Module):
 			lib.shell(removeCommandList, cwd=self.config["root"])
 
 			# Generate the report
-			outputList = lib.shell(["genhtml", "-o", coverageDir, "-t", "Coverage for '%s' built with configuration '%s'" % (str(args[0]), buildType),
+			outputList = lib.shell(["genhtml", "-o", coverageDir, "-t", "Coverage for %s built with configuration '%s'" % (", ".join([("'" + str(command[0]) + "'") for command in commandList]), buildType),
 					"--sort", os.path.join(coverageDir, "lcov_full.info")], cwd=self.config["root"], captureStdout=True)
 
 			while outputList:
@@ -315,3 +314,4 @@ class CMake(lib.Module):
 				lib.info("Coverage for '%s': %s%%" % (match.group(1), match.group(2)))
 
 			lib.info("Coverage report generated at '%s'" % (os.path.join(coverageDir, "index.html")))
+

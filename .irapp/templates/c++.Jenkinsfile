@@ -59,13 +59,23 @@ pipeline {
 						{
 							steps
 							{
-							%for index, test in tests%
-								%if options.valgrind%
-									sh "valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose --gen-suppressions=all --suppressions=%valgrindSuppPath% --xml=yes --xml-file=%buildName%_tests_%index%_valgrind.xml %test% --gtest_output=xml:%buildName%_tests_%index%_junit.xml"
-								%end%
-								%if not options.valgrind%
-									sh "%test% --gtest_output=xml:%buildName%_tests_%index%_junit.xml"
-								%end%
+							%if not options.valgrind%
+								sh "./app.py run %for index, test in tests% --cmd '%test% --gtest_output=xml:%buildName%_tests_%index%_junit.xml' %end% -j0"
+							%end%
+
+							%if options.valgrind%
+								sh "./app.py run %for index, test in tests% --cmd 'valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose --gen-suppressions=all --suppressions=%valgrindSuppPath% --xml=yes --xml-file=%buildName%_tests_%index%_valgrind.xml %test% --gtest_output=xml:%buildName%_tests_%index%_junit.xml' %end% -j0"
+							%end%
+
+							%if options.coverage%
+								publishHTML (target: [
+									allowMissing: false,
+									alwaysLinkToLastBuild: false,
+									keepAll: true,
+									reportDir: "%coverageDir%",
+									reportFiles: "index.html",
+									reportName: "Code Coverage Report"
+								])
 							%end%
 							}
 						}
