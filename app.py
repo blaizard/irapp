@@ -124,7 +124,7 @@ def action(args):
 	config = readConfig(args)
 
 	# If this is a init command, clean up the assets directory
-	if os.path.isdir(ASSETS_DIRECTORY_PATH):
+	if args.command == "init" and os.path.isdir(ASSETS_DIRECTORY_PATH):
 		shutil.rmtree(ASSETS_DIRECTORY_PATH)
 
 	lib.info("Running command '%s' in '%s'" % (str(args.command), str(config["root"])))
