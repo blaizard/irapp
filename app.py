@@ -23,6 +23,7 @@ EXECUTABLE_NAME = os.path.basename(__file__)
 DEPENDENCIES_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp")
 TEMP_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/temp")
 ASSETS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/assets")
+LOG_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/log")
 DEFAULT_CONFIG_FILE = ".irapp.json"
 
 """
@@ -53,11 +54,14 @@ def readConfig(args):
 	modules, types, lib = loadDependencies()
 
 	config = {
+		"lib": lib,
 		"types": types,
 		"root": EXECUTABLE_DIRECTORY_PATH,
 		"assets": ASSETS_DIRECTORY_PATH,
+		"log": LOG_DIRECTORY_PATH,
 		"parallelism": multiprocessing.cpu_count(),
-		"pimpl": {}
+		"pimpl": {},
+		"deploy": None
 	}
 
 	# Read the configuration
@@ -119,19 +123,42 @@ def action(args):
 	# Read the configuration
 	config = readConfig(args)
 
+	# If this is a init command, clean up the assets directory
+	if os.path.isdir(ASSETS_DIRECTORY_PATH):
+		shutil.rmtree(ASSETS_DIRECTORY_PATH)
+
 	lib.info("Running command '%s' in '%s'" % (str(args.command), str(config["root"])))
 	for moduleId in config["types"]:
 		if args.command == "init":
-			# Clear the assets directory if it exists
-			if os.path.isdir(ASSETS_DIRECTORY_PATH):
-				shutil.rmtree(ASSETS_DIRECTORY_PATH)
 			config["pimpl"][moduleId].init()
 		elif args.command == "build":
 			config["pimpl"][moduleId].build(args.type)
 		elif args.command == "clean":
 			config["pimpl"][moduleId].clean()
-		elif args.command == "deploy":
-			config["pimpl"][moduleId].deploy()
+
+def deploy(args):
+	# Read the configuration
+	config = readConfig(args)
+
+	deployDescs = config["deploy"]
+	if isinstance(deployDescs, str):
+		deployDescs = [config["deploy"]]
+	if isinstance(deployDescs, list):
+		deployDescs = {"default": deployDescs}
+
+	# Select a specific ID if needed
+	if args.id:
+		if args.id in deployDescs:
+			deployDescs = {args.id: deployDescs[args.id]}
+		else:
+			lib.error("Unknown application ID '%s'" % (args.id))
+			sys.exit(1)
+
+	if args.command == "start":
+		lib.start(deployDescs, config)
+	elif args.command == "stop":
+		lib.stop(deployDescs, config)
+	lib.status(deployDescs, config)
 
 """
 Print information regarding the program and loaded modules
@@ -399,18 +426,19 @@ def update(args):
 	executableName = "app.py"
 	dependenciesDirectoryName = ".irapp"
 
-	# Remove everything inside the dependencies path, except the current temp directory
+	# Remove everything inside the dependencies path, except the current temp directory and the log directory
 	tempFullPath = os.path.realpath(TEMP_DIRECTORY_PATH)
+	logFullPath = os.path.realpath(LOG_DIRECTORY_PATH)
 	for root, dirs, files in os.walk(DEPENDENCIES_PATH):
 		for name in files:
 			os.remove(os.path.join(root, name))
 
 		for name in dirs:
 			fullPath = os.path.realpath(os.path.join(root, name))
-			if not tempFullPath.startswith(fullPath):
+			if not tempFullPath.startswith(fullPath) and not logFullPath.startswith(fullPath):
 				shutil.rmtree(fullPath)
 			# Do not look into this path
-			if tempFullPath == fullPath:
+			if tempFullPath == fullPath or logFullPath == fullPath:
 				dirs.remove(name)
 
 	# Move the content of the dependencies directory into the new one
@@ -535,7 +563,9 @@ if __name__ == "__main__":
 		"init": action,
 		"clean": action,
 		"build": action,
-		"deploy": action,
+		"start": deploy,
+		"stop": deploy,
+		"status": deploy,
 		"run": run,
 		"update": update
 	}
@@ -561,12 +591,17 @@ if __name__ == "__main__":
 	subparsers.add_parser("init", help='Initialize or setup the project environment.')
 	subparsers.add_parser("clean", help='Clean the project environment from build artifacts.')
 	parserBuild = subparsers.add_parser("build", help='Build the project.')
-	parserBuild.add_argument("type", action='store', nargs='?', help='Build type.')
+	parserBuild.add_argument("type", action='store', nargs='?', default=None, help='Build type.')
 
 	parserUpdate = subparsers.add_parser("update", help='Update the tool to the latest version available.')
 	parserUpdate.add_argument("-f", "--force", action="store_true", dest="force", default=False, help="If set, it will update even if the last version is detected.")
 
-	parserDeploy = subparsers.add_parser("deploy", help='Deploy the application.')
+	parserStart = subparsers.add_parser("start", help="Deploy the application.")
+	parserStart.add_argument('id',  action='store', nargs='?', default=None, help='The application ID to be started.')
+	parserStop = subparsers.add_parser("stop", help="Stop the application previously deployed.")
+	parserStop.add_argument('id',  action='store', nargs='?', default=None, help='The application ID to be stopped.')
+	parserStatus = subparsers.add_parser("status", help="Display the status of the applications.")
+	parserStatus.add_argument('id',  action='store', nargs='?', default=None, help='The application ID to be prompted.')
 
 	args = parser.parse_args()
 

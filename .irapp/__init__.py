@@ -5,7 +5,7 @@ from .modules import cmake
 from .modules import git
 from .modules import default
 from .modules import jenkins
-from .modules import deploy
+from .modules import daemon
 
 def loadModules():
 	return {
@@ -13,8 +13,8 @@ def loadModules():
 		"git": git.Git,
 		"default": default.Default,
 		"jenkins": jenkins.Jenkins,
-		"deploy": deploy.Deploy
+		"daemon": daemon.Daemon
 	}
 
 def getTypeList():
-	return ["git", "default", "cmake", "jenkins", "deploy"]
+	return ["git", "default", "cmake", "jenkins", "daemon"]

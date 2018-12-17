@@ -8,6 +8,11 @@ import os
 import threading
 import Queue
 import time
+import shlex
+
+# ---- Local dependencies -----------------------------------------------------
+
+import deploy
 
 # ---- Logging methods --------------------------------------------------------
 
@@ -22,6 +27,89 @@ def warning(message):
 
 def error(message):
 	info(message, type = "ERROR")
+
+# ---- Deploy related ---------------------------------------------------------
+
+def start(deployDescs, config):
+	for appId, commandList in deployDescs.items():
+
+		context = {
+			"cwd": config["root"]
+		}
+
+		for command in commandList:
+			argList = shlex.split(command)
+
+			# Check if the command exists
+			commandExec = getattr(deploy.Commands, argList[0], None)
+			try:
+				if argList[0] in config["pimpl"]:
+					config["pimpl"][argList[0]].start(appId, argList[1:], context)
+				elif commandExec:
+					commandExec(context, argList[1:])
+				else:
+					raise Exception("Unknown command '%s'" % (argList[0]))
+			except Exception as e:
+				error("Deployment failed with command '%s' in '%s': %s" % (command, context["cwd"], str(e)))
+				sys.exit(1)
+
+		info("Application '%s' deployed" % (appId))
+
+def stop(deployDescs, config):
+	for appId, commandList in deployDescs.items():
+		for command in commandList:
+			argList = shlex.split(command)
+			try:
+				if argList[0] in config["pimpl"]:
+					config["pimpl"][argList[0]].stop(appId, argList[1:])
+			except Exception as e:
+				error("Failed while stopping '%s': %s" % (command, str(e)))
+				sys.exit(1)
+		info("Application '%s' stopped" % (appId))
+
+"""
+Shows data on the applications such as:
+│ App name │ id │ type │ pid │ status │ uptime │ memory │ cpu |
+Where:
+- type: "daemon", "docker" or ...
+- status: "running" or "stopped"
+- uptime: For how long the app is running
+- memory: The memory consumption of the process
+- cpu: The cpu used by the process
+"""
+def status(deployDescs, config):
+	info("Status:")
+
+	appStatus = {}
+	for appId, commandList in deployDescs.items():
+		appStatus[appId] = []
+		for command in commandList:
+			argList = shlex.split(command)
+			try:
+				if argList[0] in config["pimpl"]:
+					statusList = config["pimpl"][argList[0]].status(appId, argList[1:])
+					appStatus[appId] += [dict(s, type=argList[0], status="running") for s in statusList]
+					if len(statusList) == 0:
+						appStatus[appId].append({"type": argList[0], "status": "stopped"})
+			except Exception as e:
+				error("Failed while gathering status for command '%s': %s" % (command, str(e)))
+
+	formatTemplateStr = "%15s%8s%10s%10s%10s%10s%10s%10s"
+	for appId, statusList in appStatus.items():
+
+		info(formatTemplateStr % (
+			"App name", "Index", "Type", "PID", "Status", "Uptime", "CPU %", "Memory"
+		))
+
+		for index, status in enumerate(statusList):
+			info(formatTemplateStr % (
+				appId, str(index), status["type"],
+				status["pid"] if "pid" in status else "-",
+				status["status"],
+				status["uptime"] if "uptime" in status else "-",
+				status["cpu"] if "cpu" in status else "-",
+				status["memory"] if "memory" in status else "-"
+			))
 
 # ---- Utility methods --------------------------------------------------------
 
@@ -41,7 +129,7 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, 
 	def enqueueOutput(out, queue, signal):
 		try:
 			for line in iter(out.readline, b''):
-				queue.put(line.rstrip().decode('utf-8'))
+				queue.put(line.rstrip().decode('utf-8', 'ignore'))
 		except:
 			pass
 		out.close()
@@ -286,6 +374,7 @@ class Module:
 		# Create the file
 		with open(path, "w") as f:
 			f.write(content)
+		info("Published asset to '%s'" % (path))
 		return os.path.relpath(path, self.config["root"])
 
 	"""
@@ -321,5 +410,11 @@ class Module:
 	def runPost(self, commandList):
 		pass
 
-	def deploy(self, *args):
+	def start(self, *args):
+		pass
+
+	def stop(self, *args):
+		pass
+
+	def status(self, *args):
 		pass

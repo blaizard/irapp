@@ -67,8 +67,7 @@ class Jenkins(lib.Module):
 		})
 
 		# Save the Jenkins file
-		with open(os.path.join(self.config["root"], "Jenkinsfile"), "w") as f:
-			f.write(jenkinsfileStr)
+		self.publishAssetTo(jenkinsfileStr, self.config["root"], "Jenkinsfile")
 
 	def init(self):
 		if "cmake" in self.config["types"]:
