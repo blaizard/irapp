@@ -20,26 +20,42 @@ class Jenkins(lib.Module):
 		}
 
 	"""
-	Initialization for C++ projects
+	Helper function to modify and publish the Dockerfile
 	"""
-	def initCpp(self):
-
+	def loadAndPublishDockerfile(self, fileName, dependencies):
 		# Create the dockerfile image
-		with open(self.getAssetPath("jenkins.debian.latest.dockerfile"), "r") as f:
+		with open(self.getAssetPath("dockerfile", fileName), "r") as f:
 			dockerfileStr = f.read()
 
 		dockerfileTemplate = lib.Template(dockerfileStr)
 		dockerfileStr = dockerfileTemplate.process({
-			"dependencies": self.config["dependencies"]
+			"dependencies": dependencies
 		})
-		dockerfilePath = self.publishAsset(dockerfileStr, "jenkins.debian.latest.dockerfile")
+		return self.publishAsset(dockerfileStr, fileName)
+
+	"""
+	Helper function to modify and publish the Jenkinsfile
+	"""
+	def loadAndPublishJenkinsfile(self, fileName, config):
+		# Create the Jenkinsfile
+		with open(self.getAssetPath("jenkinsfile", fileName), "r") as f:
+			jenkinsfileStr = f.read()
+
+		jenkinsfileTemplate = lib.Template(jenkinsfileStr)
+		jenkinsfileStr = jenkinsfileTemplate.process(config)
+
+		# Save the Jenkins file
+		return self.publishAssetTo(jenkinsfileStr, self.config["root"], "Jenkinsfile")
+
+	"""
+	Initialization for C++ projects
+	"""
+	def initCpp(self):
+		# Create the dockerfile image
+		dockerfilePath = self.loadAndPublishDockerfile("c++.linux.dockerfile", self.config["dependencies"])
 
 		# Copy the valgrind supp file
 		valgrindSuppPath = self.copyAsset("valgrind.supp")
-
-		# Create the Jenkinsfile
-		with open(self.getAssetPath("c++.Jenkinsfile"), "r") as f:
-			jenkinsfileStr = f.read()
 
 		# Update the buildConfigs with defautl values
 		updatedBuildConfigs = {}
@@ -55,8 +71,8 @@ class Jenkins(lib.Module):
 				updatedBuildConfigs[name]["coverage"] = True
 			updatedBuildConfigs[name].update(options)
 
-		jenkinsfileTemplate = lib.Template(jenkinsfileStr)
-		jenkinsfileStr = jenkinsfileTemplate.process({
+		# Create the Jenkinsfile
+		self.loadAndPublishJenkinsfile("c++.Jenkinsfile", {
 			"dockerfilePath": dockerfilePath,
 			"staticAnalyzer": self.config["staticAnalyzer"],
 			"staticAnalyzerIgnore": self.config["staticAnalyzerIgnore"],
@@ -66,9 +82,24 @@ class Jenkins(lib.Module):
 			"coverageDir": os.path.join(self.config["buildDir"], "coverage")
 		})
 
-		# Save the Jenkins file
-		self.publishAssetTo(jenkinsfileStr, self.config["root"], "Jenkinsfile")
+	"""
+	Initialization for Python projects
+	"""
+	def initPython(self):
+		config = {
+			"configs": {
+				"Linux": {
+					"dockerfilePath": self.loadAndPublishDockerfile("python.linux.dockerfile", self.config["dependencies"]),
+					"pythonList": ["python2.7", "python3"]
+				}
+			},
+			"tests": self.config["tests"]
+		}
+		self.loadAndPublishJenkinsfile("python.Jenkinsfile", config)
+
 
 	def init(self):
 		if "cmake" in self.config["types"]:
 			self.initCpp()
+		elif "python" in self.config["types"]:
+			self.initPython()

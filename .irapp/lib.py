@@ -6,13 +6,20 @@ import sys
 import re
 import os
 import threading
-import Queue
 import time
 import shlex
+import codecs
+import json
+import shutil
+
+try:
+	from queue import Queue
+except:
+	from Queue import Queue
 
 # ---- Local dependencies -----------------------------------------------------
 
-import deploy
+from . import deploy
 
 # ---- Logging methods --------------------------------------------------------
 
@@ -53,6 +60,7 @@ def start(deployDescs, config):
 				error("Deployment failed with command '%s' in '%s': %s" % (command, context["cwd"], str(e)))
 				sys.exit(1)
 
+		time.sleep(0.5)
 		info("Application '%s' deployed" % (appId))
 
 def stop(deployDescs, config):
@@ -78,6 +86,23 @@ Where:
 - cpu: The cpu used by the process
 """
 def status(deployDescs, config):
+	def uptimeToStr(timeS):
+		strList = []
+		for check in [[3600 * 24, " day", " days"], [3600, "h", "h"], [60, "m", "m"], [1, "s", "s"]]:
+			if timeS >= check[0]:
+				unit = int(timeS / check[0])
+				strList.append("%i%s" % (unit, check[1] if unit > 1 else check[2]))
+				timeS -= unit * check[0]
+		return " ".join(strList[:2])
+
+	def memoryToStr(memBytes):
+		unitIndex = 0
+		unitList = ["B", "kB", "MB", "GB", "TB"]
+		while memBytes > 768:
+			unitIndex += 1
+			memBytes /= 1024
+		return "%.1f%s" % (memBytes, unitList[unitIndex])
+
 	info("Status:")
 
 	appStatus = {}
@@ -94,21 +119,33 @@ def status(deployDescs, config):
 			except Exception as e:
 				error("Failed while gathering status for command '%s': %s" % (command, str(e)))
 
-	formatTemplateStr = "%15s%8s%10s%10s%10s%10s%10s%10s"
+	# Update the log and restart fields
+	for appId, statusList in appStatus.items():
+		for index, status in enumerate(statusList):
+			if "pid" in status:
+				metadata, metadataPath = LogFactory.getMetadata(config["log"], appId, str(status["pid"]))
+				if "time" in metadata and "restart" in metadata:
+					status["uptime"] = uptimeToStr(time.time() - metadata["time"])
+					status["restart"] = metadata["restart"]
+					status["log"] = os.path.dirname(metadataPath)
+
+	formatTemplateStr = "%15s%10s%10s%10s%10s%10s%10s%10s %s"
 	for appId, statusList in appStatus.items():
 
 		info(formatTemplateStr % (
-			"App name", "Index", "Type", "PID", "Status", "Uptime", "CPU %", "Memory"
+			"App name", "Type", "PID", "Status", "Uptime", "CPU %", "Memory", "Restart", "Log"
 		))
 
 		for index, status in enumerate(statusList):
 			info(formatTemplateStr % (
-				appId, str(index), status["type"],
+				appId, status["type"],
 				status["pid"] if "pid" in status else "-",
 				status["status"],
 				status["uptime"] if "uptime" in status else "-",
 				status["cpu"] if "cpu" in status else "-",
-				status["memory"] if "memory" in status else "-"
+				memoryToStr(status["memory"]) if "memory" in status else "-",
+				status["restart"] if "restart" in status else "-",
+				status["log"] if "log" in status else "-"
 			))
 
 # ---- Utility methods --------------------------------------------------------
@@ -141,7 +178,7 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, 
 		stderr=(subprocess.STDOUT if captureStdout or queue else None))
 
 	if not queue:
-		queue = Queue.Queue()
+		queue = Queue()
 
 	if not signal:
 		signal = threading.Event()
@@ -185,6 +222,93 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, 
 
 	# Build the output list
 	return list(queue.queue) if isReturnStdout else []
+
+# ---- Log related methods ----------------------------------------------------
+
+"""
+Rotating log
+"""
+class RotatingLog:
+	def __init__(self, directoryPath, prefix=None, maxLogs=10, maxLogSizeBytes=100 * 1024):
+		self.maxLogSize = maxLogSizeBytes
+		self.curLogSize = maxLogSizeBytes
+		self.maxLogs = maxLogs
+		self.curLogIndex = -1
+		self.curLog = None
+		self.prefix = prefix
+		self.path = directoryPath
+
+	def getLogPath(self, index):
+		fileName = "%s%.8i.log" % (("%s." % self.prefix) if self.prefix else "", index)
+		return os.path.join(self.path, fileName)
+
+	def add(self, message):
+
+		# Create a new log file
+		if self.curLogSize >= self.maxLogSize:
+			# Check if old log needs to be removed
+			oldLog = self.getLogPath(self.curLogIndex - self.maxLogs)
+			if os.path.exists(oldLog):
+				os.remove(oldLog)
+			self.curLogIndex += 1
+			self.curLog = codecs.open(self.getLogPath(self.curLogIndex), "w", "utf-8")
+			self.curLogSize = 0
+
+		self.curLog.write(message)
+		self.curLog.flush()
+		self.curLogSize += len(message)
+
+"""
+Application log factory
+"""
+class LogFactory:
+	def __init__(self, logDirectory, appId, runningPidList, maxLogs=10, maxLogSizeBytes=100 * 1024):
+		self.logDirPath = os.path.join(logDirectory, appId)
+		self.restart = -1
+		self.maxLogs = maxLogs
+		self.maxLogSizeBytes = maxLogSizeBytes
+
+		# Remove logs from all non-running apps
+		runningPidList = [str(pid) for pid in runningPidList]
+		for file in os.listdir(self.logDirPath):
+			filePath = os.path.join(self.logDirPath, file)
+			if os.path.isdir(filePath) and file not in runningPidList:
+				shutil.rmtree(filePath)
+
+	@staticmethod
+	def getMetadata(*path):
+		metadataPath = os.path.join(os.path.join(*path), ".irapp.application.json")
+		metadata = {}
+		if os.path.exists(metadataPath):
+			with open(metadataPath, "r") as f:
+				try:
+					metadata = json.load(f)
+				except:
+					pass
+		return (metadata, metadataPath)
+
+	def createLogs(self, pid):
+
+		self.restart += 1
+
+		# Create log directory entry and remove its content
+		curlogDirPath = os.path.join(self.logDirPath, str(pid))
+		if os.path.exists(curlogDirPath):
+			shutil.rmtree(curlogDirPath)
+		os.makedirs(curlogDirPath)
+
+		# Update the json file
+		metadata, metadataPath = LogFactory.getMetadata(curlogDirPath)
+		metadata.update({
+			"restart": self.restart,
+			"time": time.time(),
+			"pid": pid
+		})
+		with open(metadataPath, "w") as f:
+			json.dump(metadata, f)
+
+		return (RotatingLog(curlogDirPath, "stdout", maxLogs=self.maxLogs, maxLogSizeBytes=self.maxLogSizeBytes),
+				RotatingLog(curlogDirPath, "stderr", maxLogs=self.maxLogs, maxLogSizeBytes=self.maxLogSizeBytes))
 
 """
 Process a template with specific values.
@@ -341,7 +465,7 @@ class Module:
 	"""
 	@staticmethod
 	def check(config):
-		return True
+		return False
 
 	"""
 	Return the default configuration of the module.
@@ -349,6 +473,12 @@ class Module:
 	@staticmethod
 	def config():
 		return {}
+
+	"""
+	Generates a log factory, used to create logs for an application
+	"""
+	def logFactory(self, appId, runningPidList):
+		return LogFactory(self.config["log"], appId, runningPidList)
 
 	"""
 	Return the path of an existing asset for read-only

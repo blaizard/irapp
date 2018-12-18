@@ -11,10 +11,14 @@ import argparse
 import datetime
 import timeit
 import math
-import Queue
 import threading
 import time
 import multiprocessing
+
+try:
+	from queue import Queue
+except:
+	from Queue import Queue
 
 GIT_REPOSITORY = "https://github.com/blaizard/irapp.git"
 EXECUTABLE_PATH = os.path.realpath(__file__)
@@ -55,7 +59,7 @@ def readConfig(args):
 
 	config = {
 		"lib": lib,
-		"types": types,
+		"types": [],
 		"root": EXECUTABLE_DIRECTORY_PATH,
 		"assets": ASSETS_DIRECTORY_PATH,
 		"log": LOG_DIRECTORY_PATH,
@@ -77,35 +81,23 @@ def readConfig(args):
 	except IOError:
 		lib.warning("Could not open configuration file '%s', using default" % (str(args.configPath)))
 
-	# Add the required module if to the type list
-	requiredModuleList = args.modules.split(",") if args.modules else []
-	for moduleId in requiredModuleList:
-		if moduleId not in config["types"]:
-			config["types"].append(moduleId)
-
 	# Map and remove unsupported modules
 	typeList = []
-	for moduleId in config["types"]:
-		isRequired = (moduleId in requiredModuleList)
-		if moduleId not in modules:
-			if isRequired:
-				lib.error("Unknown required module '%s', abort" % (moduleId))
-				sys.exit(1)
-			lib.warning("Unknown module '%s', ignoring" % (moduleId))
-			continue
+	for moduleId in types:
 		moduleClass = modules[moduleId]
 		# Add module only if it checks correctly
-		if moduleClass.check(config):
+		if moduleId in config["types"] or moduleClass.check(config):
 			typeList.append(moduleId)
 			config["pimpl"][moduleId] = moduleClass
 			# Update the default configuration
 			defaultConfig = moduleClass.config()
 			defaultConfig.update(config)
 			config = defaultConfig
-		elif isRequired:
-			lib.error("Required module '%s' is not supported by this project, abort" % (moduleId))
-			sys.exit(1)
 	config["types"] = typeList
+
+	# Resolve all path and make them absolute
+	for key in ["assets", "log"]:
+		config[key] = os.path.abspath(config[key])
 
 	# Initialize all the classes
 	for moduleId, moduleClass in config["pimpl"].items():
@@ -124,8 +116,8 @@ def action(args):
 	config = readConfig(args)
 
 	# If this is a init command, clean up the assets directory
-	if args.command == "init" and os.path.isdir(ASSETS_DIRECTORY_PATH):
-		shutil.rmtree(ASSETS_DIRECTORY_PATH)
+	if args.command == "init" and os.path.isdir(config["assets"]):
+		shutil.rmtree(config["assets"])
 
 	lib.info("Running command '%s' in '%s'" % (str(args.command), str(config["root"])))
 	for moduleId in config["types"]:
@@ -295,7 +287,7 @@ def run(args):
 
 				# If not registered, add it
 				if not workerList[i] and (totalIterations == 0 or curIteration < totalIterations):
-					workerContext[i] = Queue.Queue()
+					workerContext[i] = Queue()
 					signal = threading.Event()
 					workerList[i] = {
 						"command": " ".join(commandList[commandIndex]),
@@ -507,7 +499,7 @@ class lib:
 			stderr=(subprocess.STDOUT if captureStdout or queue else None))
 
 		if not queue:
-			queue = Queue.Queue()
+			queue = Queue()
 
 		if not signal:
 			signal = threading.Event()
@@ -573,7 +565,6 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description = "Application helper script.")
 	parser.add_argument("-c", "--config", action="store", dest="configPath", default=DEFAULT_CONFIG_FILE, help="Path of the build definition (default=%s)." % (DEFAULT_CONFIG_FILE))
 	parser.add_argument("-v", "--version", action='version', version="%s hash: %s" % (os.path.basename(__file__), str(getCurrentHash())))
-	parser.add_argument("-m", "--modules", action='store', dest="modules", default="", help="Enforce the use of specific modules (comma separated). If one of the given module fails to setup, the program returns with an error.")
 
 	subparsers = parser.add_subparsers(dest="command", help='List of available commands.')
 
