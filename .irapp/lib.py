@@ -11,6 +11,7 @@ import shlex
 import codecs
 import json
 import shutil
+import imp
 
 try:
 	from queue import Queue
@@ -19,7 +20,7 @@ except:
 
 # ---- Local dependencies -----------------------------------------------------
 
-from . import deploy
+commands = imp.load_source('commands', os.path.join(os.path.dirname(__file__), 'commands.py'))
 
 # ---- Logging methods --------------------------------------------------------
 
@@ -35,118 +36,33 @@ def warning(message):
 def error(message):
 	info(message, type = "ERROR")
 
-# ---- Deploy related ---------------------------------------------------------
-
-def start(deployDescs, config):
-	for appId, commandList in deployDescs.items():
-
-		context = {
-			"cwd": config["root"]
-		}
-
-		for command in commandList:
-			argList = shlex.split(command)
-
-			# Check if the command exists
-			commandExec = getattr(deploy.Commands, argList[0], None)
-			try:
-				if argList[0] in config["pimpl"]:
-					config["pimpl"][argList[0]].start(appId, argList[1:], context)
-				elif commandExec:
-					commandExec(context, argList[1:])
-				else:
-					raise Exception("Unknown command '%s'" % (argList[0]))
-			except Exception as e:
-				error("Deployment failed with command '%s' in '%s': %s" % (command, context["cwd"], str(e)))
-				sys.exit(1)
-
-		time.sleep(0.5)
-		info("Application '%s' deployed" % (appId))
-
-def stop(deployDescs, config):
-	for appId, commandList in deployDescs.items():
-		for command in commandList:
-			argList = shlex.split(command)
-			try:
-				if argList[0] in config["pimpl"]:
-					config["pimpl"][argList[0]].stop(appId, argList[1:])
-			except Exception as e:
-				error("Failed while stopping '%s': %s" % (command, str(e)))
-				sys.exit(1)
-		info("Application '%s' stopped" % (appId))
+# ---- Commands related -------------------------------------------------------
 
 """
-Shows data on the applications such as:
-│ App name │ id │ type │ pid │ status │ uptime │ memory │ cpu |
-Where:
-- type: "daemon", "docker" or ...
-- status: "running" or "stopped"
-- uptime: For how long the app is running
-- memory: The memory consumption of the process
-- cpu: The cpu used by the process
+Start a list of commands
 """
-def status(deployDescs, config):
-	def uptimeToStr(timeS):
-		strList = []
-		for check in [[3600 * 24, " day", " days"], [3600, "h", "h"], [60, "m", "m"], [1, "s", "s"]]:
-			if timeS >= check[0]:
-				unit = int(timeS / check[0])
-				strList.append("%i%s" % (unit, check[1] if unit > 1 else check[2]))
-				timeS -= unit * check[0]
-		return " ".join(strList[:2])
+def start(config, commandList):
+	# Context fo the command
+	context = {
+		"cwd": config["root"]
+	}
 
-	def memoryToStr(memBytes):
-		unitIndex = 0
-		unitList = ["B", "kB", "MB", "GB", "TB"]
-		while memBytes > 768:
-			unitIndex += 1
-			memBytes /= 1024
-		return "%.1f%s" % (memBytes, unitList[unitIndex])
+	for command in commandList:
+		argList = shlex.split(command)
 
-	info("Status:")
-
-	appStatus = {}
-	for appId, commandList in deployDescs.items():
-		appStatus[appId] = []
-		for command in commandList:
-			argList = shlex.split(command)
-			try:
-				if argList[0] in config["pimpl"]:
-					statusList = config["pimpl"][argList[0]].status(appId, argList[1:])
-					appStatus[appId] += [dict(s, type=argList[0], status="running") for s in statusList]
-					if len(statusList) == 0:
-						appStatus[appId].append({"type": argList[0], "status": "stopped"})
-			except Exception as e:
-				error("Failed while gathering status for command '%s': %s" % (command, str(e)))
-
-	# Update the log and restart fields
-	for appId, statusList in appStatus.items():
-		for index, status in enumerate(statusList):
-			if "pid" in status:
-				metadata, metadataPath = LogFactory.getMetadata(config["log"], appId, str(status["pid"]))
-				if "time" in metadata and "restart" in metadata:
-					status["uptime"] = uptimeToStr(time.time() - metadata["time"])
-					status["restart"] = metadata["restart"]
-					status["log"] = os.path.dirname(metadataPath)
-
-	formatTemplateStr = "%15s%10s%10s%10s%10s%10s%10s%10s %s"
-	for appId, statusList in appStatus.items():
-
-		info(formatTemplateStr % (
-			"App name", "Type", "PID", "Status", "Uptime", "CPU %", "Memory", "Restart", "Log"
-		))
-
-		for index, status in enumerate(statusList):
-			info(formatTemplateStr % (
-				appId, status["type"],
-				status["pid"] if "pid" in status else "-",
-				status["status"],
-				status["uptime"] if "uptime" in status else "-",
-				status["cpu"] if "cpu" in status else "-",
-				memoryToStr(status["memory"]) if "memory" in status else "-",
-				status["restart"] if "restart" in status else "-",
-				status["log"] if "log" in status else "-"
-			))
+		# Command from module
+		if argList[0] in config["pimpl"]:
+			if len(argList) < 3:
+				raise Exception("Too few arguments for command '%s'" % (command))
+			config["pimpl"][argList[0]].start(argList[1], argList[2:], context)
+		# Pre-built command
+		else:
+			commandExec = getattr(commands.Commands, argList[0], None)
+			if commandExec:
+				commandExec(context, argList[1:])
+			# Else an error occured
+			else:
+				raise Exception("Unknown command '%s'" % (command))
 
 # ---- Utility methods --------------------------------------------------------
 
@@ -225,6 +141,9 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, 
 
 # ---- Log related methods ----------------------------------------------------
 
+# Hack
+codecs.register_error("strict", codecs.ignore_errors)
+
 """
 Rotating log
 """
@@ -251,7 +170,7 @@ class RotatingLog:
 			if os.path.exists(oldLog):
 				os.remove(oldLog)
 			self.curLogIndex += 1
-			self.curLog = codecs.open(self.getLogPath(self.curLogIndex), "w", "utf-8")
+			self.curLog = codecs.open(self.getLogPath(self.curLogIndex), "w", encoding="utf-8")
 			self.curLogSize = 0
 
 		self.curLog.write(message)
@@ -269,11 +188,12 @@ class LogFactory:
 		self.maxLogSizeBytes = maxLogSizeBytes
 
 		# Remove logs from all non-running apps
-		runningPidList = [str(pid) for pid in runningPidList]
-		for file in os.listdir(self.logDirPath):
-			filePath = os.path.join(self.logDirPath, file)
-			if os.path.isdir(filePath) and file not in runningPidList:
-				shutil.rmtree(filePath)
+		if os.path.exists(self.logDirPath):
+			runningPidList = [str(pid) for pid in runningPidList]
+			for file in os.listdir(self.logDirPath):
+				filePath = os.path.join(self.logDirPath, file)
+				if os.path.isdir(filePath) and file not in runningPidList:
+					shutil.rmtree(filePath)
 
 	@staticmethod
 	def getMetadata(*path):
@@ -301,8 +221,7 @@ class LogFactory:
 		metadata, metadataPath = LogFactory.getMetadata(curlogDirPath)
 		metadata.update({
 			"restart": self.restart,
-			"time": time.time(),
-			"pid": pid
+			"time": time.time()
 		})
 		with open(metadataPath, "w") as f:
 			json.dump(metadata, f)
@@ -519,13 +438,25 @@ class Module:
 			content = f.read()
 		return self.publishAssetTo(content, directory, *name)
 
+	def getStatusList(self):
+		statusList = self.status() or [];
+		for status in statusList:
+			if "pid" in status:
+				metadata, metadataPath = LogFactory.getMetadata(self.config["log"], status["id"], str(status["pid"]))
+				if "time" in metadata and "restart" in metadata:
+					status["uptime"] = time.time() - metadata["time"]
+					status["restart"] = metadata["restart"]
+					status["log"] = os.path.dirname(metadataPath)
+			status["type"] = self.__class__.__name__.lower()
+		return statusList
+
 	"""
 	Runs the initialization of the module.
 	"""
 	def init(self):
 		pass
 
-	def info(self):
+	def info(self, verbose):
 		pass
 
 	def clean(self):
@@ -540,11 +471,18 @@ class Module:
 	def runPost(self, commandList):
 		pass
 
+	"""
+	Start application.
+	"""
 	def start(self, *args):
 		pass
 
-	def stop(self, *args):
+	"""
+	Stop all application refered by appId. If appId is None, stop all applications.
+	"""
+	def stop(self, appId=None):
 		pass
 
-	def status(self, *args):
+	# Application statuses
+	def status(self):
 		pass

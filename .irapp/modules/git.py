@@ -57,6 +57,8 @@ class Git(lib.Module):
 
 		# ---- Update .gitignore ----------------------------------------------
 
+		lib.info("Updating .gitignore")
+
 		gitIgnoreStr = ""
 		gitIgnorePath = os.path.join(self.config["root"], ".gitignore")
 		if os.path.isfile(gitIgnorePath):
@@ -66,34 +68,42 @@ class Git(lib.Module):
 
 		# Patterns for the various supported types
 		patterns = {
-			"irapp": {
+			"Irapp": {
 				"types": ["git"],
 				"patternList": [".irapp/*", "!.irapp/assets/"]
 			},
-			"git": {
+			"Git": {
 				"types": ["git"],
 				"patternList": ["~*", "*.orig"]
 			},
-			"python": {
+			"Python": {
 				"types": ["python"],
-				"patternList": [".pyc", "__pycache__"]
+				"patternList": [".pyc", "__pycache__/"]
 			},
-			"c++": {
+			"C++": {
 				"types": ["cmake"],
 				"patternList": ["Makefile", "Makefile.old", "*.o", "*.d", "*.so", "*.a", "*.out", "*.gcda", "*.gcno", ".lcovrc"]
 			}
 		}
 		# Delete previous insertions by irapp
-		gitIgnoreList[:] = [line for line in gitIgnoreList if line.find("Automatically generated content by irapp") == -1]
+		for index, line in enumerate(gitIgnoreList):
+			if line.find("Automatically generated content by irapp") != -1:
+				gitIgnoreList = gitIgnoreList[:index]
+				break
 		for name, config in patterns.items():
 			if set(config["types"]).intersection(self.config["types"]) and name not in self.config["gitignore.ignore"]:
 				gitIgnoreList[:] = [line for line in gitIgnoreList if line not in config["patternList"]]
 		gitIgnoreList = "\n".join(gitIgnoreList).rstrip().split("\n")
+
+		gitIgnoreList += ([""] if len(gitIgnoreList) and gitIgnoreList[-1] else []) + [
+				"# ---- Automatically generated content by irapp -------------------------------",
+				"# Note: everything below this line will be updated"]
+
 		# Add new entries
 		for name, config in patterns.items():
 			if set(config["types"]).intersection(self.config["types"]) and name not in self.config["gitignore.ignore"]:
-				gitIgnoreList += ([""] if len(gitIgnoreList) and gitIgnoreList[-1] else []) + ["# ---- %s (Automatically generated content by irapp) ----" % (name)] + config["patternList"]
+				gitIgnoreList += ([""] if len(gitIgnoreList) and gitIgnoreList[-1] else []) + ["# %s" % (name)] + config["patternList"]
 
-		# Write back
+		# Write .gitignore
 		with open(os.path.join(self.config["root"], ".gitignore"),  "w") as f:
 			f.write("\n".join(gitIgnoreList))

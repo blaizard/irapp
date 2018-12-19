@@ -51,7 +51,7 @@ def loadDependencies():
 """
 Read the configruation file and create it if it does not exists.
 """
-def readConfig(args):
+def readConfig(args, verbose=True):
 	global lib
 
 	# Read the dependencies
@@ -65,7 +65,7 @@ def readConfig(args):
 		"log": LOG_DIRECTORY_PATH,
 		"parallelism": multiprocessing.cpu_count(),
 		"pimpl": {},
-		"deploy": None
+		"start": {}
 	}
 
 	# Read the configuration
@@ -79,7 +79,8 @@ def readConfig(args):
 				lib.error("Could not parse configuration file '%s'; %s" % (str(args.configPath), str(e)))
 				sys.exit(1)
 	except IOError:
-		lib.warning("Could not open configuration file '%s', using default" % (str(args.configPath)))
+		if verbose:
+			lib.warning("Could not open configuration file '%s', using default" % (str(args.configPath)))
 
 	# Map and remove unsupported modules
 	typeList = []
@@ -103,7 +104,8 @@ def readConfig(args):
 	for moduleId, moduleClass in config["pimpl"].items():
 		config["pimpl"][moduleId] = moduleClass(config)
 
-	lib.info("Modules identified: %s" % (", ".join(config["types"])))
+	if verbose:
+		lib.info("Modules identified: %s" % (", ".join(config["types"])))
 	return config
 
 # ---- Supported actions -----------------------------------------------------
@@ -128,40 +130,111 @@ def action(args):
 		elif args.command == "clean":
 			config["pimpl"][moduleId].clean()
 
-def deploy(args):
+"""
+Application/command related actions
+"""
+def commands(args):
 	# Read the configuration
 	config = readConfig(args)
 
-	deployDescs = config["deploy"]
-	if isinstance(deployDescs, str):
-		deployDescs = [config["deploy"]]
-	if isinstance(deployDescs, list):
-		deployDescs = {"default": deployDescs}
+	idList = args.idList
+	lib.info("Executing '%s' on %s" % (args.command, ", ".join(idList)))
 
-	# Select a specific ID if needed
-	if args.id:
-		if args.id in deployDescs:
-			deployDescs = {args.id: deployDescs[args.id]}
-		else:
-			lib.error("Unknown application ID '%s'" % (args.id))
-			sys.exit(1)
-
+	# Start a new command
 	if args.command == "start":
-		lib.start(deployDescs, config)
+		commandsDescs = config["start"]
+		if isinstance(commandsDescs, str):
+			commandsDescs = [commandsDescs]
+		if isinstance(commandsDescs, list):
+			commandsDescs = {"default": commandsDescs}
+
+		# Ensure not wrong ID is set
+		for commandId in idList:
+			if commandId != "all" and commandId not in commandsDescs:
+				lib.error("Unknown command preset '%s'" % (commandId))
+				sys.exit(1)
+
+		if "all" not in idList:
+			commandsDescs = {commandId: commandsDescs[commandId] for commandId in idList}
+
+		for commandId, commandList in commandsDescs.items():
+			lib.info("Starting command preset '%s'" % (commandId))
+			lib.start(config, commandList)
+
 	elif args.command == "stop":
-		lib.stop(deployDescs, config)
-	lib.status(deployDescs, config)
+
+		for moduleId in config["types"]:
+			for appId in idList:
+				config["pimpl"][moduleId].stop(None if appId == "all" else appId)
 
 """
 Print information regarding the program and loaded modules
 """
 def info(args):
-	# Read the configuration
-	config = readConfig(args)
 
-	lib.info("Hash: %s" % (str(getCurrentHash())))
-	for moduleId in config["types"]:
-		config["pimpl"][moduleId].info()
+	info = {}
+	verbose = not args.json
+
+	# Read the configuration
+	config = readConfig(args, verbose)
+
+	# Select what to print
+	printAll = False if args.status else True
+	printStatus = True if printAll or args.status else False
+	printModules = True if printAll else False
+
+	if printAll:
+		info["hash"] = str(getCurrentHash())
+		if verbose:
+			lib.info("Hash: %s" % (info["hash"]))
+
+	if printModules:
+		for moduleId in config["types"]:
+			info[moduleId] = config["pimpl"][moduleId].info(verbose)
+
+	if printStatus:
+		info["statusList"] = []
+		for moduleId in config["types"]:
+			info["statusList"] += config["pimpl"][moduleId].getStatusList()
+
+		# Print the status list if any
+		if verbose and len(info["statusList"]):
+			def memoryToStr(memBytes):
+				unitIndex = 0
+				unitList = ["B", "kB", "MB", "GB", "TB"]
+				while memBytes > 768:
+					unitIndex += 1
+					memBytes /= 1024
+				return "%.1f%s" % (memBytes, unitList[unitIndex])
+			def uptimeToStr(timeS):
+				strList = []
+				for check in [[3600 * 24, " day", " days"], [3600, "h", "h"], [60, "m", "m"], [1, "s", "s"]]:
+					if timeS >= check[0]:
+						unit = int(timeS / check[0])
+						strList.append("%i%s" % (unit, check[1] if unit > 1 else check[2]))
+						timeS -= unit * check[0]
+				return " ".join(strList[:2]) or "0s"
+
+			formatTemplateStr = "%15s%10s%10s%10s%10s%10s%10s %s"
+			lib.info("Running applications:")
+			lib.info(formatTemplateStr % (
+				"Name", "Type", "PID", "Uptime", "CPU %", "Memory", "Restart", "Log"
+			))
+			for status in info["statusList"]:
+				lib.info(formatTemplateStr % (
+					status["id"],
+					status["type"],
+					status["pid"] if "pid" in status else "-",
+					uptimeToStr(status["uptime"]) if "uptime" in status else "-",
+					status["cpu"] if "cpu" in status else "-",
+					memoryToStr(status["memory"]) if "memory" in status else "-",
+					status["restart"] if "restart" in status else "-",
+					status["log"] if "log" in status else "-"
+				))
+
+	# Print the output in JSON format
+	if not verbose:
+		print(json.dumps(info))
 
 def runWorker(command, hideOutput, queue, signal):
 	lib.shell(command, captureStdout=hideOutput, queue=queue, signal=signal)
@@ -555,9 +628,8 @@ if __name__ == "__main__":
 		"init": action,
 		"clean": action,
 		"build": action,
-		"start": deploy,
-		"stop": deploy,
-		"status": deploy,
+		"start": commands,
+		"stop": commands,
 		"run": run,
 		"update": update
 	}
@@ -578,7 +650,10 @@ if __name__ == "__main__":
 	parserRun.add_argument("-t", "--timeout", type=int, action="store", dest="timeout", default=-1, help="Timeout (in seconds) until the iteration should be considered as invalid. If set to -1, an automatic timeout is set, calculated based on the previous run. If set to 0, no timeout is set.")
 	parserRun.add_argument("args", nargs=argparse.REMAINDER, help='Extra arguments to be passed to the command executed.')
 
-	subparsers.add_parser("info", help='Display information about the script and the loaded modules.')
+	parserInfo = subparsers.add_parser("info", help='Display information about the script and the loaded modules.')
+	parserInfo.add_argument("--status", action="store_true", dest="status", default=False, help="Display information related to application statuses.")
+	parserInfo.add_argument("--json", action="store_true", dest="json", default=False, help="Print the output in json format.")
+
 	subparsers.add_parser("init", help='Initialize or setup the project environment.')
 	subparsers.add_parser("clean", help='Clean the project environment from build artifacts.')
 	parserBuild = subparsers.add_parser("build", help='Build the project.')
@@ -587,12 +662,10 @@ if __name__ == "__main__":
 	parserUpdate = subparsers.add_parser("update", help='Update the tool to the latest version available.')
 	parserUpdate.add_argument("-f", "--force", action="store_true", dest="force", default=False, help="If set, it will update even if the last version is detected.")
 
-	parserStart = subparsers.add_parser("start", help="Deploy the application.")
-	parserStart.add_argument('id',  action='store', nargs='?', default=None, help='The application ID to be started.')
-	parserStop = subparsers.add_parser("stop", help="Stop the application previously deployed.")
-	parserStop.add_argument('id',  action='store', nargs='?', default=None, help='The application ID to be stopped.')
-	parserStatus = subparsers.add_parser("status", help="Display the status of the applications.")
-	parserStatus.add_argument('id',  action='store', nargs='?', default=None, help='The application ID to be prompted.')
+	parserStart = subparsers.add_parser("start", help="Execute a list of predefined commands.")
+	parserStart.add_argument('idList',  action='store', nargs='*', default=["default"], help='The command ID to be started. If none, the command ID named "default" will be started.')
+	parserStop = subparsers.add_parser("stop", help="Stop the applications associated with the predefined commands.")
+	parserStop.add_argument('idList',  action='store', nargs='*', default=["all"], help='The names of the application to be stopped. If none, all applications will be stopped.')
 
 	args = parser.parse_args()
 

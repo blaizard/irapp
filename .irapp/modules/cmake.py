@@ -235,20 +235,37 @@ class CMake(lib.Module):
 
 		lib.shell(["cmake", "--build", os.path.join(buildDirPath, buildType), "--", "-j%i" % (self.config["parallelism"])], cwd=self.config["root"])
 
-	def info(self, *args):
+	def info(self, verbose):
 
 		defaultBuildType = self.getDefaultBuildType()
 		buildDir = os.path.join(self.config["root"], self.config["buildDir"])
-		lib.info("Build configurations (using '%s'):" % (self.config["buildGenerator"]))
+		info = {
+			"buildGenerator": self.config["buildGenerator"],
+			"configList": []
+		}
 		for buildType, buildConfig in self.config["buildConfigs"].items():
 			# Check if available
 			buildPath = os.path.join(buildDir, buildType)
-			buildPath = buildPath if os.path.isdir(buildPath) else ""
+			buildPath = buildPath if os.path.isdir(buildPath) else None
+			if buildPath:
+				info["configList"].append({
+					"id": buildType,
+					"default": (defaultBuildType == buildType),
+					"type": self.getType(buildType),
+					"compiler": self.getCompiler(buildType),
+					"coverage": self.hasCoverage(buildType),
+					"path": buildPath
+				})
+		info["configList"].sort(key=lambda config: config["id"])
 
-			isDefaultBuildType = "(default)" if defaultBuildType == buildType else ""
-			hasCoverage = "(coverage)" if self.hasCoverage(buildType) else ""
+		if verbose:
+			lib.info("Build configurations (using '%s'):" % (self.config["buildGenerator"]))
+			templateStr = "%15s %1s %8s %8s %10s %s"
+			lib.info(templateStr % ("Name", "", "Type", "Compiler", "Coverage", "Path"))
+			for config in info["configList"]:
+				lib.info(templateStr % (config["id"], "x" if config["default"] else "", config["type"], config["compiler"], "x" if config["coverage"] else "", config["path"]))
 
-			lib.info("%20s %9s %8s %8s %10s %s" % (buildType, isDefaultBuildType, self.getType(buildType), self.getCompiler(buildType), hasCoverage, str(buildPath)))
+		return info
 
 	def runPre(self, commandList):
 
