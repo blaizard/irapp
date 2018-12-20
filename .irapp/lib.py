@@ -7,11 +7,13 @@ import re
 import os
 import threading
 import time
+import timeit
 import shlex
 import codecs
 import json
 import shutil
 import imp
+import math
 
 try:
 	from queue import Queue
@@ -138,6 +140,169 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, 
 
 	# Build the output list
 	return list(queue.queue) if isReturnStdout else []
+
+"""
+Execute multiple commands, either sequentially or in parallel.
+It supports a limited number of iterations, of time or other options.
+
+@param nbIterations Total number of iteration of the commandList before terminating. If 0, it will be endless.
+@param isAutoTimeout If set, it will automatically calculate a timeout for each iteration, this timeout is based on previous run.
+"""
+def shellMulti(commandList, cwd=".", nbIterations=1, isAutoTimeout=True, verbose=True, verboseCommand=False, timeout=0, duration=0, nbJobs=1):
+
+	# Custom process class to control process pool
+	class Thread(threading.Thread):
+		def __init__(self, *args, **kwargs):
+			threading.Thread.__init__(self, *args, **kwargs)
+			self._threadException = None
+
+		def run(self):
+			try:
+				threading.Thread.run(self)
+			except Exception as e:
+				self._threadException = e
+
+		def clearException(self):
+			self._threadException = None
+
+		@property
+		def exception(self):
+			return self._threadException
+
+	# Create the pool of workers
+	workerList = [None] * nbJobs
+	workerContext = [None] * nbJobs
+	workerErrors = {}
+
+	startingTime = timeit.default_timer()
+	startingTimeIteration = timeit.default_timer()
+	totalTimeS = 0
+	curNbIterations = 0
+	nbWorkers = 0
+	commandIndex = 0
+	curIteration = 0
+	iterations = {}
+	errorMsg = None
+
+	try:
+
+		while not bool(workerErrors):
+
+			# Fill the worker pool and update the number of workers currently working
+			nbWorkers = 0
+			for i in range(nbJobs):
+
+				# If a worker is registered
+				if workerList[i]:
+					workerElpasedTimeS = timeit.default_timer() - workerList[i]["time"]
+
+					# Check if it has timed out
+					if timeout and workerElpasedTimeS > timeout:
+						workerErrors[i] = ["Timeout (%is) on '%s'" % (timeout, workerList[i]["command"])]
+						raise Exception("<<<< Timeout (%is) >>>>" % (timeout))
+
+					elif not workerList[i]["worker"].is_alive():
+						# The worker is completed
+						if workerList[i]["worker"].exception:
+							workerErrors[i] = [str(workerList[i]["worker"].exception)]
+							raise Exception("<<<< FAILURE >>>>")
+
+						workerList[i]["worker"].join()
+						workerIteration = workerList[i]["iterationId"]
+						workerList[i] = None
+					
+						# Increase the iteration number and check if one full iteration is completed
+						iterations[workerIteration] = ({"nb": iterations[workerIteration]["nb"] + 1, "time": iterations[workerIteration]["time"] + workerElpasedTimeS}) if workerIteration in iterations else {"nb": 1, "time": workerElpasedTimeS}
+						if iterations[workerIteration]["nb"] == len(commandList):
+							curNbIterations += 1
+							totalTimeS += iterations[workerIteration]["time"]
+							startingTimeIteration = timeit.default_timer()
+							iterations.pop(workerIteration)
+					else:
+						nbWorkers += 1
+
+				# If not registered, add it
+				if not workerList[i] and (nbIterations == 0 or curIteration < nbIterations):
+					workerContext[i] = Queue()
+					signal = threading.Event()
+					workerList[i] = {
+						"command": " ".join(commandList[commandIndex]),
+						"worker": Thread(target=shell, args=(commandList[commandIndex], cwd, (not verbose), False, None if verbose else workerContext[i], signal)),
+						"time": timeit.default_timer(),
+						"iterationId": curIteration,
+						"signal": signal
+					}
+					if verboseCommand:
+						info("Executing %s" % (workerList[i]["command"]))
+					workerList[i]["worker"].start()
+					# Increase the command index and the interation
+					commandIndex += 1
+					if commandIndex == len(commandList):
+						commandIndex = 0
+						curIteration += 1
+					nbWorkers += 1
+
+			if not verbose:
+				sys.stdout.write("\rTime: %.4fs, %i iteration(s), average %s, timeout %s, %i job(s)" % (
+						(timeit.default_timer() - startingTime),
+						curNbIterations,
+						str(float("%.6f" % (totalTimeS / curNbIterations))) + "s" if curNbIterations else "?",
+						("%is" % (timeout)) if timeout else "-",
+						nbWorkers))
+				sys.stdout.flush()
+
+			# Update the timeout, if auto timeout is selected
+			if isAutoTimeout and curNbIterations:
+				timeout = math.ceil(totalTimeS / curNbIterations * 5)
+
+			# If time reached its limit, break
+			if duration and (timeit.default_timer() - startingTime) > duration:
+				break
+
+			# If the number of iterations reached its limit, break
+			if nbIterations and (curNbIterations >= nbIterations):
+				break
+
+	except (KeyboardInterrupt, SystemExit) as e:
+		errorMsg = "<<<< Keyboard Interrupt >>>>"
+	except BaseException as e:
+		errorMsg = str(e)
+
+	# Print the error message if any
+	if not verbose:
+		print("")
+	if errorMsg:
+		error(errorMsg)
+
+	# Ensure the workers are terminated
+	# Set the signal to the thread and wait until it is completed
+	sys.stdout.write("Kill pending jobs... (can take up to 10s)\r")
+	sys.stdout.flush()
+	for i in range(nbJobs):
+		if workerList[i]:
+			workerList[i]["signal"].set()
+	for i in range(nbJobs):
+		if workerList[i] and workerList[i]["worker"].is_alive():
+			workerList[i]["worker"].clearException()
+			errorMsg = None
+			try:
+				workerList[i]["worker"].join(10)
+				errorMsg = workerList[i]["worker"].exception
+			except:
+				errorMsg = "Cannot terminate process"
+			if errorMsg:
+				workerErrors[i] = workerErrors[i] if i in workerErrors else []
+				workerErrors[i].append(str(errorMsg))
+
+	if bool(workerErrors):
+		for i, errorList in workerErrors.items():
+			if workerList[i]:
+				# Print the content of the log
+				error("---- (worker #%i) -------------------------------------------------------------" % (i))
+				for line in list(workerContext[i].queue):
+					print(line)
+				error("Failure cause: %s" % (", ".join(errorList)))
+		raise Exception()
 
 # ---- Log related methods ----------------------------------------------------
 

@@ -7,7 +7,6 @@ import signal
 import platform
 import subprocess
 import re
-import shutil
 import threading
 import time
 import errno

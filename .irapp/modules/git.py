@@ -17,6 +17,37 @@ class Git(lib.Module):
 	def check(config):
 		return os.path.isdir(os.path.join(config["root"], ".git"))
 
+	# ---- gitignore rules ----------------------------------------------------
+
+	@staticmethod
+	def gitignoreIrapp():
+		return [".irapp/*",
+				"!.irapp/assets/"]
+
+	@staticmethod
+	def gitignoreGit():
+		return ["~*",
+				"*.orig",
+				"*.back"]
+
+	@staticmethod
+	def gitignorePython():
+		return [".pyc",
+				"__pycache__/"]
+
+	@staticmethod
+	def gitignoreCpp():
+		return ["Makefile",
+				"Makefile.old",
+				"*.o",
+				"*.d",
+				"*.so",
+				"*.a",
+				"*.out",
+				"*.gcda",
+				"*.gcno",
+				".lcovrc"]
+
 	def init(self):
 
 		# ---- Update gitmodules ----------------------------------------------
@@ -70,19 +101,19 @@ class Git(lib.Module):
 		patterns = {
 			"Irapp": {
 				"types": ["git"],
-				"patternList": [".irapp/*", "!.irapp/assets/"]
+				"patternList": Git.gitignoreIrapp()
 			},
 			"Git": {
 				"types": ["git"],
-				"patternList": ["~*", "*.orig"]
+				"patternList": Git.gitignoreGit()
 			},
 			"Python": {
 				"types": ["python"],
-				"patternList": [".pyc", "__pycache__/"]
+				"patternList": Git.gitignorePython()
 			},
 			"C++": {
 				"types": ["cmake"],
-				"patternList": ["Makefile", "Makefile.old", "*.o", "*.d", "*.so", "*.a", "*.out", "*.gcda", "*.gcno", ".lcovrc"]
+				"patternList": Git.gitignoreCpp()
 			}
 		}
 		# Delete previous insertions by irapp

@@ -4,6 +4,7 @@
 from .. import lib
 import os
 import re
+import json
 
 class CMake(lib.Module):
 
@@ -42,6 +43,11 @@ class CMake(lib.Module):
 				"clang-release": {
 					"type": "Release",
 					"compiler": "clang"
+				},
+				"clang-tidy": {
+					"type": "Debug",
+					"compiler": "clang",
+					"lint": True
 				}
 			},
 			"buildGenerator": generator,
@@ -86,6 +92,13 @@ class CMake(lib.Module):
 		# Check if this is a coverage build
 		return ("coverage" in self.config["buildConfigs"][buildType]) and (self.config["buildConfigs"][buildType]["coverage"])
 
+	def hasLint(self, buildType=None):
+		if not buildType:
+			buildType = self.getDefaultBuildType()
+
+		# Check if this is a coverage build
+		return ("lint" in self.config["buildConfigs"][buildType]) and (self.config["buildConfigs"][buildType]["lint"])
+
 	def getType(self, buildType=None):
 		if not buildType:
 			buildType = self.getDefaultBuildType()
@@ -129,6 +142,7 @@ class CMake(lib.Module):
 				"type": self.getType(name),
 				"compiler": self.getCompiler(name),
 				"coverage": self.hasCoverage(name),
+				"lint": self.hasLint(name),
 				"default": False,
 				"available": False
 			}
@@ -142,6 +156,7 @@ class CMake(lib.Module):
 
 			# Identify the compiler and ensure it is present
 			isCoverageError = False
+			isLintError = False
 
 			# ---- GCC
 			if updatedBuildConfig["compiler"] == "gcc":
@@ -154,6 +169,8 @@ class CMake(lib.Module):
 						lib.info("Adding compilation flag '--coverage'")
 					else:
 						isCoverageError = True
+				if updatedBuildConfig["lint"]:
+					isLintError = True
 
 			# ---- CLANG
 			elif updatedBuildConfig["compiler"] == "clang":
@@ -161,13 +178,21 @@ class CMake(lib.Module):
 				cxxCompiler = lib.which("clang++")
 				if updatedBuildConfig["coverage"]:
 					isCoverageError = True
-
+				if updatedBuildConfig["lint"]:
+					if lib.which("clang-tidy"):
+						commandList.extend(["-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"])
+					else:
+						isLintError = True
 			else:
 				lib.error("Unkown compiler '%s' for build configuration '%s'" % (str(updatedBuildConfig["compiler"]), name))
 				sys.exit(1)
 
 			if isCoverageError:
 				lib.warning("Unable to find coverage tools for '%s', ignoring configuration '%s'" % (updatedBuildConfig["compiler"], name))
+				continue
+
+			if isLintError:
+				lib.warning("Unable to find lint tools for '%s', ignoring configuration '%s'" % (updatedBuildConfig["compiler"], name))
 				continue
 
 			if not cCompiler or not cxxCompiler:
@@ -215,7 +240,7 @@ class CMake(lib.Module):
 		lib.shell(["mkdir", os.path.join(buildDirPath, "bin")], cwd=self.config["root"])
 		lib.shell(["mkdir", os.path.join(buildDirPath, "lib")], cwd=self.config["root"])
 
-	def build(self, buildType = None, *args):
+	def build(self, buildType=None, target=None):
 
 		buildDirPath = os.path.join(self.config["root"], self.config["buildDir"])
 
@@ -233,7 +258,36 @@ class CMake(lib.Module):
 			self.clean()
 			self.setDefaultBuildType(buildType)
 
-		lib.shell(["cmake", "--build", os.path.join(buildDirPath, buildType), "--", "-j%i" % (self.config["parallelism"])], cwd=self.config["root"])
+		if self.hasLint(buildType):
+
+			# Print clang-tidy version
+			clangTidyVersion = lib.shell(["clang-tidy", "--version"], captureStdout=True)
+			lib.info("clang-tidy version: %s" % (re.search(r'([\d.]+)', clangTidyVersion[1]).group(1)))
+
+			# Read the compile_commands.json file
+			compileCommandsJson = os.path.join(self.config["root"], self.config["buildDir"], buildType, "compile_commands.json")
+			try:
+				with open(compileCommandsJson, "r") as f:
+					compileCommandList = json.load(f)
+			except Exception as e:
+				lib.error("Could not open '%s': %s" % (compileCommandsJson, str(e)))
+				sys.exit(1)
+
+			# Filter some entries and generate the command
+			commandList = []
+			for command in compileCommandList:
+				ignore = False
+				for ignoreStr in self.config["staticAnalyzerIgnore"]:
+					if command["file"].find(ignoreStr) != -1:
+						ignore = True
+						break
+				if not ignore:
+					commandList.append(["clang-tidy", "-p", command["directory"], command["file"]])
+
+			# Run everything
+			lib.shellMulti(commandList, cwd=".", verbose=True, verboseCommand=True, nbJobs=self.config["parallelism"])
+		else:
+			lib.shell(["cmake", "--build", os.path.join(buildDirPath, buildType), "--target", target if target else "all", "--", "-j%i" % (self.config["parallelism"])], cwd=self.config["root"])
 
 	def info(self, verbose):
 
@@ -243,6 +297,8 @@ class CMake(lib.Module):
 			"buildGenerator": self.config["buildGenerator"],
 			"configList": []
 		}
+
+		# List all build types and their properties
 		for buildType, buildConfig in self.config["buildConfigs"].items():
 			# Check if available
 			buildPath = os.path.join(buildDir, buildType)
@@ -254,16 +310,24 @@ class CMake(lib.Module):
 					"type": self.getType(buildType),
 					"compiler": self.getCompiler(buildType),
 					"coverage": self.hasCoverage(buildType),
+					"lint": self.hasLint(buildType),
 					"path": buildPath
 				})
 		info["configList"].sort(key=lambda config: config["id"])
 
 		if verbose:
 			lib.info("Build configurations (using '%s'):" % (self.config["buildGenerator"]))
-			templateStr = "%15s %1s %8s %8s %10s %s"
-			lib.info(templateStr % ("Name", "", "Type", "Compiler", "Coverage", "Path"))
+			templateStr = "%15s %1s %8s %8s %4s %4s %s"
+			lib.info(templateStr % ("Name", "", "Type", "Compiler", "Cov.", "Lint", "Path"))
 			for config in info["configList"]:
-				lib.info(templateStr % (config["id"], "x" if config["default"] else "", config["type"], config["compiler"], "x" if config["coverage"] else "", config["path"]))
+				lib.info(templateStr % (config["id"], "x" if config["default"] else "", config["type"], config["compiler"], "x" if config["coverage"] else "", "x" if config["lint"] else "", config["path"]))
+
+		# List the default targets
+		buildDirPath = os.path.join(self.config["root"], self.config["buildDir"])
+		targetsRaw = lib.shell(["cmake", "--build", os.path.join(buildDirPath, defaultBuildType), "--target", "help"], cwd=self.config["root"], captureStdout=True)
+		info["targetList"] = [re.search("\.+\s+([^\s]+)", targetStr).group(1) for targetStr in targetsRaw[1:] if re.search("\.+\s+([^\s]+)", targetStr)]
+		if verbose:
+			lib.info("Targets for '%s': %s" % (defaultBuildType, ", ".join(info["targetList"])))
 
 		return info
 
@@ -331,4 +395,3 @@ class CMake(lib.Module):
 				lib.info("Coverage for '%s': %s%%" % (match.group(1), match.group(2)))
 
 			lib.info("Coverage report generated at '%s'" % (os.path.join(coverageDir, "index.html")))
-

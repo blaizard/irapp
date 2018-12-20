@@ -62,13 +62,15 @@ class Jenkins(lib.Module):
 		for name, options in self.config["buildConfigs"].items():
 			updatedBuildConfigs[name] = {
 				"valgrind": False,
-				"tests": True,
+				"tests": False,
 				"coverage": False
 			}
 			if options["default"]:
 				updatedBuildConfigs[name]["valgrind"] = True
 			if options["coverage"]:
 				updatedBuildConfigs[name]["coverage"] = True
+			if not options["lint"]:
+				updatedBuildConfigs[name]["tests"] = True
 			updatedBuildConfigs[name].update(options)
 
 		# Create the Jenkinsfile

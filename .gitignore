@@ -1,4 +1,18 @@
-.irbuild-assets/
-build/
-CMakeLists.txt
-Jenkinsfile
+.irapp/log
+.irapp/assets
+
+# ---- Automatically generated content by irapp -------------------------------
+# Note: everything below this line will be updated
+
+# Python
+.pyc
+__pycache__/
+
+# Git
+~*
+*.orig
+*.back
+
+# Irapp
+.irapp/*
+!.irapp/assets/
