@@ -49,7 +49,7 @@ pipeline {
 							{
 								sh './app.py update'
 								sh './app.py init'
-								sh './app.py build %buildName%'
+								sh './app.py build -c %buildName%'
 								%if options.compiler == "clang"% warnings(consoleParsers: [[parserName: 'Clang (LLVM based)']]) %end%
 								%if options.compiler == "gcc"% warnings(consoleParsers: [[parserName: 'GNU Make + GNU C Compiler (gcc)']]) %end%
 							}

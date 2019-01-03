@@ -30,11 +30,11 @@ class Daemon(lib.Module):
 	def getProcesses():
 		processes = {}
 		if platform.system() == "Windows":
-			#output = lib.shell(["tasklist"], captureStdout=True)
-			output = lib.shell(["wmic", "process", "get", "processid,commandline"], captureStdout=True)
+			#output = lib.shell(["tasklist"], capture=True)
+			output = lib.shell(["wmic", "process", "get", "processid,commandline"], capture=True)
 			# to complete
 		else:
-			output = lib.shell(["ps", "-eo", "pid,ppid,rss,%cpu,command"], captureStdout=True)
+			output = lib.shell(["ps", "-eo", "pid,ppid,rss,%cpu,command"], capture=True)
 			for line in output[1:]:
 				fields = line.strip().split()
 				processes[int(fields[0])] = {

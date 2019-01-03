@@ -1,43 +1,92 @@
 #!/usr/bin/env groovy
+/**
+ * It requires the following Jenkins plugins to work:
+ * - Warnings Next Generation
+ * - JUnit Plugin
+ * - valgrind
+ */
 pipeline {
 	agent none
 	stages
 	{
-		stage('Test')
+		stage('Platforms')
 		{
 			parallel
 			{
-				stage('Linux')
-				{
-					agent
-					{
-						dockerfile
+						stage('debian.python:v3')
 						{
-							filename 'assets/python.linux.dockerfile'
-						}
-					}
-					stages
-					{
-						stage('Tests python2.7')
-						{
-							steps
+							agent
 							{
-								sh "python2.7 --version"
-									sh "python2.7 ./tests/unit/testShell.py"
-									sh "python2.7 ./tests/endtoend/testCMake.py"
+								dockerfile
+								{
+									filename 'assets/debian.dockerfile'
+								}
+							}
+							stages
+							{
+								stage('Build debian.python:v3')
+								{
+									steps
+									{
+										sh './app.py update'
+										sh './app.py init'
+										sh './app.py build  -c python:v3 '
+									}
+								}
+									stage('Test debian.python:v3')
+									{
+										steps
+										{
+												sh "./app.py run  --cmd 'python3 tests/unit/testShell.py'  --cmd 'python3 tests/endtoend/testCMake.py'  -j0"
+										}
+									}
+							}
+							post
+							{
+								always
+								{
+									// Publish the warnings from the various compiler or static analyzers
+									// Publish junit test reports
+								}
 							}
 						}
-						stage('Tests python3')
+						stage('debian.python:v2.7')
 						{
-							steps
+							agent
 							{
-								sh "python3 --version"
-									sh "python3 ./tests/unit/testShell.py"
-									sh "python3 ./tests/endtoend/testCMake.py"
+								dockerfile
+								{
+									filename 'assets/debian.dockerfile'
+								}
+							}
+							stages
+							{
+								stage('Build debian.python:v2.7')
+								{
+									steps
+									{
+										sh './app.py update'
+										sh './app.py init'
+										sh './app.py build  -c python:v2.7 '
+									}
+								}
+									stage('Test debian.python:v2.7')
+									{
+										steps
+										{
+												sh "./app.py run  --cmd 'python2.7 tests/unit/testShell.py'  --cmd 'python2.7 tests/endtoend/testCMake.py'  -j0"
+										}
+									}
+							}
+							post
+							{
+								always
+								{
+									// Publish the warnings from the various compiler or static analyzers
+									// Publish junit test reports
+								}
 							}
 						}
-					}
-				}
 			}
 		}
 	}

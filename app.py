@@ -28,6 +28,7 @@ EXECUTABLE_NAME = os.path.basename(__file__)
 DEPENDENCIES_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp")
 TEMP_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/temp")
 ASSETS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/assets")
+ARTIFACTS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/artifacts")
 LOG_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/log")
 DEFAULT_CONFIG_FILE = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp.json")
 
@@ -58,15 +59,37 @@ def readConfig(args, verbose=True):
 	# Read the dependencies
 	modules, types, lib = loadDependencies()
 
+	# The following configuration keys can be overridden by the configuration file
 	config = {
-		"lib": lib,
-		"types": [],
-		"root": EXECUTABLE_DIRECTORY_PATH,
+		# Path of the asset directory to store all auto-generated assets
 		"assets": ASSETS_DIRECTORY_PATH,
+		# Path to store all generated artifacts
+		"artifacts": ARTIFACTS_DIRECTORY_PATH,
+		# Path of the log directory, to store logs of the running applications
 		"log": LOG_DIRECTORY_PATH,
+		# The parallelism allowed on this machine
 		"parallelism": multiprocessing.cpu_count(),
-		"pimpl": {},
-		"start": {}
+		# List of modules to be supported
+		"types": [],
+		# List of actions to be performed. The action called "default", will be executed if no
+		# specific action is called.
+		"start": {
+			# "server": ["cd 'server/bin'", "daemon server ./main"]
+		},
+		# List of dependencies to run the application. Dependencies are categorized by
+		# platfrom, such as "windows", "debian"...
+		"dependencies": {
+			# "debian": ["libssl-dev", "libcurl-dev"]
+		},
+		# The tests to be run. All tests are categorized by test framework and or platform separated by a dot.
+		# Each of the test compize the relative file path to the root directory.
+		"tests": {
+			# "gtest": ["build/bin/tests"],
+			# "python.unittest": ["tests/testSimple.py"]
+		},
+		"builds": {
+			# "gcc-release": { <options...> }		
+		}
 	}
 
 	# Read the configuration
@@ -77,11 +100,23 @@ def readConfig(args, verbose=True):
 				configUser = json.load(f)
 				config.update(configUser)
 			except Exception as e:
-				lib.error("Could not parse configuration file '%s'; %s" % (str(args.configPath), str(e)))
-				sys.exit(1)
+				lib.fatal("Could not parse configuration file '%s'; %s" % (str(args.configPath), str(e)))
 	except IOError:
 		if verbose:
 			lib.warning("Could not open configuration file '%s', using default" % (str(args.configPath)))
+
+	# Add parameters that are not meant to be modified
+	config.update({
+		"lib": lib,
+		"root": EXECUTABLE_DIRECTORY_PATH,
+		"pimpl": {},
+	})
+
+	# Resolve all path and make them absolute, plus create the directories if it does not exists
+	for key in ["assets", "log", "artifacts"]:
+		config[key] = os.path.abspath(config[key])
+		if not os.path.exists(config[key]):
+			os.makedirs(config[key])
 
 	# Map and remove unsupported modules
 	typeList = []
@@ -92,14 +127,8 @@ def readConfig(args, verbose=True):
 			typeList.append(moduleId)
 			config["pimpl"][moduleId] = moduleClass
 			# Update the default configuration
-			defaultConfig = moduleClass.config()
-			defaultConfig.update(config)
-			config = defaultConfig
+			config = lib.deepMerge(moduleClass.config(), config)
 	config["types"] = typeList
-
-	# Resolve all path and make them absolute
-	for key in ["assets", "log"]:
-		config[key] = os.path.abspath(config[key])
 
 	# Initialize all the classes
 	for moduleId, moduleClass in config["pimpl"].items():
@@ -118,17 +147,41 @@ def action(args):
 	# Read the configuration
 	config = readConfig(args)
 
-	# If this is a init command, clean up the assets directory
-	if args.command == "init" and os.path.isdir(config["assets"]):
-		shutil.rmtree(config["assets"])
-
 	lib.info("Running command '%s' in '%s'" % (str(args.command), str(config["root"])))
-	for moduleId in config["types"]:
-		if args.command == "init":
+	if args.command == "init":
+		# Clean up some directory
+		for cleanup in ["assets", "artifacts"]:
+			if os.path.isdir(config[cleanup]):
+				shutil.rmtree(config[cleanup])
+				os.makedirs(config[cleanup])
+		for moduleId in config["types"]:
 			config["pimpl"][moduleId].init()
-		elif args.command == "build":
-			config["pimpl"][moduleId].build(args.config, args.target)
-		elif args.command == "clean":
+
+	elif args.command == "build":
+		allbuildTypeList = [buildType for buildType in args.configList if buildType.find(":") == -1]
+		specificbuildTypes = {buildType.split(":")[0]: buildType.split(":")[1] for buildType in args.configList if buildType.find(":") != -1}
+		for moduleId in specificbuildTypes:
+			if not moduleId in config["types"]:
+				lib.fatal("The module '%s' is not enabled for this configuration" % (moduleId))
+		buildTypesUsed = set()
+		for moduleId in config["types"]:
+
+			# Set build configuration
+			for buildType in allbuildTypeList:
+				if config["pimpl"][moduleId].setDefaultBuildType(buildType):
+					buildTypesUsed.add(buildType)
+			if moduleId in specificbuildTypes:
+				if not config["pimpl"][moduleId].setDefaultBuildType(specificbuildTypes[moduleId]):
+					lib.fatal("Unsupported build configuration '%s' for '%s'" % (specificbuildTypes[moduleId], moduleId))
+
+			config["pimpl"][moduleId].build(args.target)
+
+		# Ensure that all build configurations have been used
+		for buildTypesNotUsed in set(allbuildTypeList) - buildTypesUsed:
+			lib.warning("The build configuration '%s' has not been used" % (buildTypesNotUsed))
+
+	elif args.command == "clean":
+		for moduleId in config["types"]:
 			config["pimpl"][moduleId].clean()
 
 """
@@ -152,8 +205,7 @@ def commands(args):
 		# Ensure not wrong ID is set
 		for commandId in idList:
 			if commandId != "all" and commandId not in commandsDescs:
-				lib.error("Unknown command preset '%s'" % (commandId))
-				sys.exit(1)
+				lib.fatal("Unknown command preset '%s'" % (commandId))
 
 		if "all" not in idList:
 			commandsDescs = {commandId: commandsDescs[commandId] for commandId in idList}
@@ -190,8 +242,13 @@ def info(args):
 			lib.info("Hash: %s" % (info["hash"]))
 
 	if printModules:
+		buildList = []
 		for moduleId in config["types"]:
+			buildList += ["%s:%s" % (moduleId, build) for build in config["pimpl"][moduleId].getConfig(["builds"], noneValue={}, onlySpecific=True).keys()]
 			info[moduleId] = config["pimpl"][moduleId].info(verbose)
+		if buildList:
+			lib.info("Build configurations: %s" % (", ".join(buildList)))
+		info["buildList"] = buildList
 
 	if printApps:
 		info["statusList"] = []
@@ -277,8 +334,7 @@ def run(args):
 	elif len(commandList) > 1:
 		lib.info("Running commands %s%s" % (", ".join([("'" + " ".join(cmd) + "'") for cmd in commandList]), optionsStr))
 	else:
-		lib.error("No command was executed")
-		sys.exit(1)
+		lib.fatal("No command was executed")
 
 	# Pre run the supported modules
 	for moduleId in config["types"]:
@@ -322,7 +378,7 @@ def update(args):
 	lib.info("Current version: %s" % (str(currentGitHash)))
 
 	if not args.force:
-		gitRemote = lib.shell(["git", "ls-remote", GIT_REPOSITORY, "HEAD"], captureStdout=True)
+		gitRemote = lib.shell(["git", "ls-remote", GIT_REPOSITORY, "HEAD"], capture=True)
 		gitHash = gitRemote[0].lstrip().split()[0]
 		lib.info("Latest version available: %s" % (gitHash))
 
@@ -330,7 +386,7 @@ def update(args):
 		if currentGitHash == gitHash:
 			lib.info("Already up to date!")
 			return
-	lib.info("Updating to latest version...")
+	lib.info("Updating to latest version from %s..." % (GIT_REPOSITORY))
 
 	# Create and cleanup the temporary directory
 	if os.path.isdir(TEMP_DIRECTORY_PATH):
@@ -344,7 +400,7 @@ def update(args):
 	# Read the version changes
 	changeList = None
 	if currentGitHash:
-		changeList = lib.shell(["git", "log", "--pretty=\"%s\"", "%s..HEAD" % (currentGitHash)], cwd=TEMP_DIRECTORY_PATH, captureStdout=True, ignoreError=True) 
+		changeList = lib.shell(["git", "log", "--pretty=\"%s\"", "%s..HEAD" % (currentGitHash)], cwd=TEMP_DIRECTORY_PATH, capture=True, ignoreError=True) 
 
 	# These are the location of the files for the updated and should NOT change over time
 	executableName = "app.py"
@@ -375,7 +431,7 @@ def update(args):
 	shutil.move(os.path.join(TEMP_DIRECTORY_PATH, executableName), EXECUTABLE_PATH)
 
 	# Read again current hash
-	gitRawHash = lib.shell(["git", "rev-parse", "HEAD"], cwd=TEMP_DIRECTORY_PATH, captureStdout=True)
+	gitRawHash = lib.shell(["git", "rev-parse", "HEAD"], cwd=TEMP_DIRECTORY_PATH, capture=True)
 	gitHash = gitRawHash[0].lstrip().split()[0]
 
 	# Remove temporary directory
@@ -401,23 +457,32 @@ Minimalistic lib implementation as a fallback
 """
 class lib:
 	@staticmethod
-	def info(message, type = "INFO"):
-		print("[%s] %s" % (str(type), str(message)))
+	def info(message):
+		sys.stdout.write("[INFO] %s\n" % (str(message)))
+		sys.stdout.flush()
 
 	@staticmethod
 	def warning(message):
-		lib.info(message, type = "WARNING")
+		sys.stdout.write("[WARNING] %s\n" % (str(message)))
+		sys.stdout.flush()
 
 	@staticmethod
 	def error(message):
-		lib.info(message, type = "ERROR")
+		sys.stderr.write("[ERROR] %s\n" % (str(message)))
+		sys.stderr.flush()
+
+	@staticmethod
+	def fatal(message):
+		sys.stderr.write("[FATAL] %s\n" % (str(message)))
+		sys.stderr.flush()
+		sys.exit(1)
 
 	"""
 	Execute a shell command in a specific directory.
 	If it fails, it will throw.
 	"""
 	@staticmethod
-	def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, signal=None):
+	def shell(command, cwd=".", capture=False, ignoreError=False, queue=None, signal=None):
 
 		def enqueueOutput(out, queue, signal):
 			for line in iter(out.readline, b''):
@@ -425,10 +490,10 @@ class lib:
 			out.close()
 			signal.set()
 
-		isReturnStdout = True if captureStdout and not queue else False
+		isReturnStdout = True if capture and not queue else False
 
-		proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=(subprocess.PIPE if captureStdout or queue else None),
-			stderr=(subprocess.STDOUT if captureStdout or queue else None))
+		proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=(subprocess.PIPE if capture or queue else None),
+			stderr=(subprocess.STDOUT if capture or queue else None))
 
 		if not queue:
 			queue = Queue()
@@ -437,7 +502,7 @@ class lib:
 			signal = threading.Event()
 
 		# Wait until a signal is raised or until the the process is terminated
-		if captureStdout:
+		if capture:
 			outputThread = threading.Thread(target=enqueueOutput, args=(proc.stdout, queue, signal))
 			outputThread.start()
 			signal.wait()
@@ -516,7 +581,7 @@ if __name__ == "__main__":
 	subparsers.add_parser("init", help='Initialize or setup the project environment.')
 	subparsers.add_parser("clean", help='Clean the project environment from build artifacts.')
 	parserBuild = subparsers.add_parser("build", help='Build the project.')
-	parserBuild.add_argument("-c", "--config", action="store", dest="config", default=None, help="Use this specific build configuration.")
+	parserBuild.add_argument("-c", "--config", action="append", dest="configList", default=[], help="Use this specific build configuration. Use the notation <moduleId>:<buildConfig> to target a specific module.")
 	parserBuild.add_argument('target',  action='store', nargs='?', default=None, help='The target to build. If none, the default target will be built.')
 
 	parserUpdate = subparsers.add_parser("update", help='Update the tool to the latest version available.')

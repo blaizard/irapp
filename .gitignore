@@ -5,7 +5,7 @@
 # Note: everything below this line will be updated
 
 # Python
-.pyc
+*.pyc
 __pycache__/
 
 # Git
@@ -13,6 +13,3 @@ __pycache__/
 *.orig
 *.back
 
-# Irapp
-.irapp/*
-!.irapp/assets/

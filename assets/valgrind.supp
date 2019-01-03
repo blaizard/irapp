@@ -1,0 +1,18 @@
+{
+	<libgcrypt>
+	Memcheck:Leak
+	...
+	obj:*libgcrypt*
+}
+{
+	<libcrypto>
+	Memcheck:Leak
+	...
+	obj:*libcrypto*
+}
+{
+	<openssl>
+	Memcheck:Leak
+	...
+	fun:OPENSSL_init_library
+}

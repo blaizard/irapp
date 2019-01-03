@@ -8,15 +8,11 @@ from .modules import default
 from .modules import jenkins
 from .modules import daemon
 
+# Modules sorted by order
+moduleList = [git.Git, default.Default, cmake.CMake, python.Python, jenkins.Jenkins, daemon.Daemon]
+
 def loadModules():
-	return {
-		"cmake": cmake.CMake,
-		"python": python.Python,
-		"git": git.Git,
-		"default": default.Default,
-		"jenkins": jenkins.Jenkins,
-		"daemon": daemon.Daemon
-	}
+	return {module.name(): module for module in moduleList}
 
 def getTypeList():
-	return ["git", "default", "cmake", "python", "jenkins", "daemon"]
+	return [module.name() for module in moduleList]

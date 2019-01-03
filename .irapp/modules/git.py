@@ -32,7 +32,7 @@ class Git(lib.Module):
 
 	@staticmethod
 	def gitignorePython():
-		return [".pyc",
+		return ["*.pyc",
 				"__pycache__/"]
 
 	@staticmethod
@@ -71,12 +71,12 @@ class Git(lib.Module):
 						lib.shell(["git", "init"], cwd=root)
 
 						# Update the index with submodules
-						submodulesPath = lib.shell(["git", "config", "-f", ".gitmodules", "--get-regexp", "^submodule\..*\.path$"], cwd=root, captureStdout=True)
+						submodulesPath = lib.shell(["git", "config", "-f", ".gitmodules", "--get-regexp", "^submodule\..*\.path$"], cwd=root, capture=True)
 						for pathKeyAndPath in submodulesPath:
 							pathKeyAndPath = pathKeyAndPath.split(" ", 1)
 							urlKey = pathKeyAndPath[0].replace(".path", ".url", 1)
 							path = pathKeyAndPath[1]
-							url = lib.shell(["git", "config", "-f", ".gitmodules", "--get", urlKey], cwd=root, captureStdout=True)
+							url = lib.shell(["git", "config", "-f", ".gitmodules", "--get", urlKey], cwd=root, capture=True)
 
 							lib.info("Add submodule %s to path %s" % (url[0], path))
 							lib.shell(["git", "submodule", "add", "-f", url[0], path], cwd=root, ignoreError=True)

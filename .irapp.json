@@ -1,9 +1,8 @@
 {
 	"types": ["python"],
 	"assets": "./assets",
-	"gitignore.ignore": ["irapp"],
-	"tests": [
-		"./tests/unit/testShell.py",
-		"./tests/endtoend/testCMake.py"
-	]
+	"tests": {
+		"python.unittest": ["tests/unit/testShell.py", "tests/endtoend/testCMake.py"]
+	},
+	"ignore": ["git.gitignore.irapp"]
 }

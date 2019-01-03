@@ -23,20 +23,29 @@ except:
 # ---- Local dependencies -----------------------------------------------------
 
 commands = imp.load_source('commands', os.path.join(os.path.dirname(__file__), 'commands.py'))
+types = imp.load_source('types', os.path.join(os.path.dirname(__file__), 'types.py'))
 
 # ---- Logging methods --------------------------------------------------------
 
 """
 Print messages
 """
-def info(message, type = "INFO"):
-	print("[%s] %s" % (str(type), str(message)))
+def info(message):
+	sys.stdout.write("[INFO] %s\n" % (str(message)))
+	sys.stdout.flush()
 
 def warning(message):
-	info(message, type = "WARNING")
+	sys.stdout.write("[WARNING] %s\n" % (str(message)))
+	sys.stdout.flush()
 
 def error(message):
-	info(message, type = "ERROR")
+	sys.stderr.write("[ERROR] %s\n" % (str(message)))
+	sys.stderr.flush()
+
+def fatal(message):
+	sys.stderr.write("[FATAL] %s\n" % (str(message)))
+	sys.stderr.flush()
+	sys.exit(1)
 
 # ---- Commands related -------------------------------------------------------
 
@@ -68,9 +77,34 @@ def start(config, commandList):
 
 # ---- Utility methods --------------------------------------------------------
 
+"""
+Generates a unique ID: an integer starting from 1
+"""
+class UniqueId:
+	counter = 0
+def uniqueId():
+	UniqueId.counter += 1
+	return UniqueId.counter
+
+"""
+Deep merge 2 dictionaries
+"""
+def deepMerge(dst, src):
+	for key, value in src.items():
+		if isinstance(value, dict):
+			node = dst.setdefault(key, {})
+			deepMerge(node, value)
+		else:
+			dst[key] = value
+
+	return dst
+
+"""
+Return the path of the executable if availabl, None otherwise
+"""
 def which(executable):
 	try:
-		path = shell(["which", executable], captureStdout=True)
+		path = shell(["which", executable], capture=True)
 	except:
 		return None
 	return path[0]
@@ -79,7 +113,7 @@ def which(executable):
 Execute a shell command in a specific directory.
 If it fails, it will throw.
 """
-def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, signal=None):
+def shell(command, cwd=".", capture=False, ignoreError=False, queue=None, signal=None, hideStdout=False, hideStderr=False):
 
 	def enqueueOutput(out, queue, signal):
 		try:
@@ -90,10 +124,13 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, 
 		out.close()
 		signal.set()
 
-	isReturnStdout = True if captureStdout and not queue else False
 
-	proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=(subprocess.PIPE if captureStdout or queue else None),
-		stderr=(subprocess.STDOUT if captureStdout or queue else None))
+	stdout = open(os.devnull, 'w') if hideStdout else (subprocess.PIPE if capture or queue else None)
+	stderr = open(os.devnull, 'w') if hideStderr else (subprocess.STDOUT if capture or queue else None)
+
+	isReturnStdout = True if capture and not queue else False
+
+	proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=stdout, stderr=stderr)
 
 	if not queue:
 		queue = Queue()
@@ -102,7 +139,7 @@ def shell(command, cwd=".", captureStdout=False, ignoreError=False, queue=None, 
 		signal = threading.Event()
 
 	# Wait until a signal is raised or until the the process is terminated
-	if captureStdout:
+	if capture:
 		outputThread = threading.Thread(target=enqueueOutput, args=(proc.stdout, queue, signal))
 		outputThread.start()
 		signal.wait()
@@ -148,7 +185,7 @@ It supports a limited number of iterations, of time or other options.
 @param nbIterations Total number of iteration of the commandList before terminating. If 0, it will be endless.
 @param isAutoTimeout If set, it will automatically calculate a timeout for each iteration, this timeout is based on previous run.
 """
-def shellMulti(commandList, cwd=".", nbIterations=1, isAutoTimeout=True, verbose=True, verboseCommand=False, timeout=0, duration=0, nbJobs=1):
+def shellMulti(commandList, cwd=".", nbIterations=1, isAutoTimeout=True, verbose=True, verboseCommand=False, timeout=0, duration=0, nbJobs=1, hideStdout=False, hideStderr=False):
 
 	# Custom process class to control process pool
 	class Thread(threading.Thread):
@@ -227,7 +264,7 @@ def shellMulti(commandList, cwd=".", nbIterations=1, isAutoTimeout=True, verbose
 					signal = threading.Event()
 					workerList[i] = {
 						"command": " ".join(commandList[commandIndex]),
-						"worker": Thread(target=shell, args=(commandList[commandIndex], cwd, (not verbose), False, None if verbose else workerContext[i], signal)),
+						"worker": Thread(target=shell, args=(commandList[commandIndex], cwd, (not verbose), False, None if verbose else workerContext[i], signal, hideStdout, hideStderr)),
 						"time": timeit.default_timer(),
 						"iterationId": curIteration,
 						"signal": signal
@@ -421,8 +458,7 @@ class Template:
 
 		for k in key.split("."):
 			if k not in args:
-				error("Template value '%s' is not set." % (key))
-				sys.exit(1)
+				fatal("Template value '%s' is not set." % (key))
 			args = args[k]
 
 		return args
@@ -441,28 +477,49 @@ class Template:
 					return str(value)
 				elif isinstance(value, str):
 					return "\"%s\"" % (value)
-				error("Unsupported type for value '%s'." % (match.group()))
-				sys.exit(1)
+				elif isinstance(value, list):
+					return str(bool(value))
+				elif isinstance(value, dict):
+					return str(bool(value))
+				fatal("Unsupported type for value '%s'." % (match.group()))
 			return match.group()
 
 		conditionStr = re.sub(self.patternWord, replaceValue, conditionStr)
-		condition = eval(conditionStr)
+		try:
+			condition = eval(conditionStr)
+		except:
+			fatal("Cannot evaluate condition '%s'" % (conditionStr))
 		return bool(condition)
 
-	def process(self, args, removeEmptyLines = True):
-		output = self.processInternals(self.template, args)
-		output = output.replace("%%", "%")
+	def process(self, args, removeEmptyLines=True, recursive=False):
+		processedTemplate = self.template
+
+		# Process the template
+		nbIterations = 0
+		while True:
+			processedTemplate, isProcessed = self.processInternals(processedTemplate, args)
+			if not isProcessed or not recursive:
+				break
+			nbIterations += 1
+			if nbIterations > 10:
+				raise Exception("Too many iterations (>10)")
+
+		processedTemplate = processedTemplate.replace("%%", "%")
 		if removeEmptyLines:
-			output = "\n".join([line for line in output.split('\n') if line.strip() != ''])
-		return output
+			processedTemplate = "\n".join([line for line in processedTemplate.split('\n') if line.strip() != ''])
+		return processedTemplate
 
 	def processInternals(self, template, args):
 
 		index = 0
 		output = ""
 		ignoreOutput = 0
+		isProcessed = False
 
 		for match in self.pattern.finditer(template):
+
+			# Tells that at least something has been done
+			isProcessed = True
 
 			# Update the output string and the new index
 			if not ignoreOutput:
@@ -526,11 +583,10 @@ class Template:
 					output += str(self.getValue(args, match.group(0)))
 				continue
 
-			error("Template operation '%s' is not valid." % (operation))
-			sys.exit(1)
+			fatal("Template operation '%s' is not valid." % (operation))
 
 		output += template[index:len(template)]
-		return output
+		return (output, isProcessed)
 
 # ---- Module base class ------------------------------------------------------
 
@@ -542,6 +598,11 @@ class Module:
 
 	def __init__(self, config):
 		self.config = config
+		self.defaultBuildType = None
+
+	@classmethod
+	def name(cls):
+		return cls.__name__.lower()
 
 	"""
 	Defines whether or not a module is present.
@@ -557,6 +618,55 @@ class Module:
 	@staticmethod
 	def config():
 		return {}
+
+	"""
+	Return the specific command based on the attributes
+	"""
+	def getCommand(self, commandType, typeIds, args):
+		# Build the description from the typeIds
+		desc = {"run": "./%path%"}
+		for typeId in typeIds.split("."):
+			if typeId in self.config["pimpl"]:
+				desc.update(self.config["pimpl"][typeId].getCommandsTemplate())
+			elif typeId in types.Types:
+				desc.update(types.Types[typeId])
+
+		if commandType not in desc:
+			return None
+		templateStr = desc[commandType]
+		desc.update(args)
+		return Template(templateStr).process(desc, recursive=True, removeEmptyLines=False)
+
+	"""
+	Get the configuration value for this modules.
+	Start to look in the specific values, if not, look in the generic.
+	If no value is present, returns noneValue
+	"""
+	def getConfig(self, keyList=[], noneValue=None, onlySpecific=False):
+		def getValue(config):
+			for key in keyList:
+				if key not in config:
+					return None
+				config = config[key]
+			return config
+		# Look for the specific option first
+		specificValue = getValue(self.config[self.name()]) if self.name() in self.config else None
+		# Then the generic
+		genericValue = getValue(self.__class__.config()) if onlySpecific else getValue(self.config)
+		# Merge the values
+		if isinstance(genericValue, dict) and isinstance(specificValue, dict):
+			return self.config["lib"].deepMerge(genericValue, specificValue)
+		if specificValue != None:
+			return specificValue
+		if genericValue != None:
+			return genericValue
+		return noneValue
+
+	"""
+	Check if a configruation is available
+	"""
+	def isConfig(self, keyList=[], onlySpecific=False):
+		return False if self.getConfig(keyList, onlySpecific=onlySpecific) == None else True
 
 	"""
 	Generates a log factory, used to create logs for an application
@@ -616,6 +726,63 @@ class Module:
 		return statusList
 
 	"""
+	Save and set the default build type, if valid
+	"""
+	def setDefaultBuildType(self, buildType, save=True):
+		# Check if the build type is registered in the config of this module
+		if not self.isConfig(["builds", buildType], onlySpecific=True):
+			return False
+
+		# If build type is different than previous one already registered, then cleanup
+		if save:
+			currentBuildType = self.getDefaultBuildType(onlyFromConfig=True)
+			if buildType != currentBuildType:
+				self.clean()
+				info("Setting '%s' as default build configuration for '%s'" % (buildType, self.name()))
+				currentBuildTypePath = os.path.join(self.config["artifacts"], ".%s.buildtype" % (self.name()))
+				with open(currentBuildTypePath, "w") as f:
+					f.write(buildType)
+		self.defaultBuildType = buildType
+		return True
+
+	"""
+	Return the current active build type
+	"""
+	def getDefaultBuildType(self, onlyFromConfig=False):
+
+		# If the configuration is present
+		if self.defaultBuildType:
+			return self.defaultBuildType
+
+		# Read the current configuration if any
+		currentBuildTypePath = os.path.join(self.config["artifacts"], ".%s.buildtype" % (self.name()))
+		if os.path.isfile(currentBuildTypePath):
+			with open(currentBuildTypePath, "r") as f:
+				buildType = f.read()
+				if buildType in self.config["builds"]:
+					self.defaultBuildType = buildType
+					return buildType
+
+		# If none, use the first config
+		if not onlyFromConfig:
+			for name in self.config["builds"]:
+				return name
+
+		return None
+
+	"""
+	Return the dependencies of this specific module per platform
+	"""
+	def dependencies(self):
+		return {}
+
+	"""
+	Command invocation template
+	"""
+	def getCommandsTemplate(self):
+		return {}
+
+	"""
 	Runs the initialization of the module.
 	"""
 	def init(self):
@@ -627,7 +794,7 @@ class Module:
 	def clean(self):
 		pass
 
-	def build(self, *args):
+	def build(self, target):
 		pass
 
 	def runPre(self, commandList):

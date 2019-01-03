@@ -16,7 +16,7 @@ class Jenkins(lib.Module):
 			"staticAnalyzer": True,
 			"staticAnalyzerIgnore": [],
 			"dependencies": [],
-			"tests": []
+			"tests": {}
 		}
 
 	"""
@@ -84,24 +84,68 @@ class Jenkins(lib.Module):
 			"coverageDir": os.path.join(self.config["buildDir"], "coverage")
 		})
 
-	"""
-	Initialization for Python projects
-	"""
-	def initPython(self):
-		config = {
-			"configs": {
-				"Linux": {
-					"dockerfilePath": self.loadAndPublishDockerfile("python.linux.dockerfile", self.config["dependencies"]),
-					"pythonList": ["python2.7", "python3"]
-				}
-			},
-			"tests": self.config["tests"]
+	def dependencies(self):
+		return {
+			"debian": ["valgrind"]
 		}
-		self.loadAndPublishJenkinsfile("python.Jenkinsfile", config)
-
 
 	def init(self):
-		if "cmake" in self.config["types"]:
-			self.initCpp()
-		elif "python" in self.config["types"]:
-			self.initPython()
+
+		# Build the dependencies per platform
+		dependencies = {}
+		for moduleId, module in self.config["pimpl"].items():
+			for platform, dependencyList in module.dependencies().items():
+				dependencies[platform] = (dependencies[platform] if platform in dependencies else set()) | set(dependencyList)
+
+		# Generate the configs
+		builds = {}
+		for moduleId, module in self.config["pimpl"].items():
+			for buildName, options in module.getConfig(["builds"], noneValue={}, onlySpecific=True).items():
+				builds["%s:%s" % (moduleId, buildName)] = dict(options, configs={moduleId: buildName})
+		builds = builds or {"": {}}
+
+		# Copy the valgrind suppression file
+		valgrindSuppPath = self.copyAsset("valgrind.supp")
+
+		# Generate the various dockerfiles
+		configs = {}
+		for platform, deps in dependencies.items():
+			configs[platform] = {
+				"dockerfilePath": self.loadAndPublishDockerfile("%s.dockerfile" % (platform), list(deps)),
+				"builds": {}
+			}
+			# Set default values to build
+			for buildName, options in builds.items():
+				updatedOptions = {
+					"compiler": "unknown",
+					"memleaks": False,
+					"lint": False,
+					"junit": False,
+					"tests": [],
+					"configs": {},
+					# Specific options
+					"valgrindSuppPath": valgrindSuppPath
+				}
+				updatedOptions.update(options)
+
+				if not updatedOptions["lint"]:
+					# Set temporarly the build configurations
+					for moduleId, buildConfig in updatedOptions["configs"].items():
+						self.config["pimpl"][moduleId].setDefaultBuildType(buildConfig, save=False)
+
+					# Update the tests
+					for typeIds, testList in self.config["tests"].items():
+						for path in testList:
+							for name in ["junit", "test", "run"]:
+								execTest = self.getCommand(name, typeIds, {
+										"report": "%s.%s_tests_%i_%s.report" % (platform, buildName.replace(":", "."), lib.uniqueId(), name),
+										"path": path})
+								if execTest:
+									if name == "junit":
+										updatedOptions["junit"] = True
+									updatedOptions["tests"].append(execTest)
+									break
+
+				configs[platform]["builds"][buildName] = updatedOptions
+
+		self.loadAndPublishJenkinsfile("Jenkinsfile", {"configs": configs})
