@@ -276,12 +276,13 @@ class CMake(lib.Module):
 
 			commandList = []
 			compiler = self.getCompiler(buildType)
-			if compiler == "clang":
+			if compiler == "clang-tidy":
 				# Print clang-tidy version
 				clangTidyVersion = lib.shell(["clang-tidy", "--version"], capture=True)
 				lib.info("clang-tidy version: %s" % (re.search(r'([\d.]+)', clangTidyVersion[1]).group(1)))
 				for command in compileCommandList:
-					commandList.append(["clang-tidy", "-p", command["directory"], "-quiet", command["file"]])
+					# Do not use "-quiet" as it is not recognized in earlier versions of clang-tidy
+					commandList.append(["clang-tidy", "-p", command["directory"], command["file"]])
 
 			elif compiler == "cppcheck":
 				# Print clang-tidy version
@@ -296,6 +297,9 @@ class CMake(lib.Module):
 							+ ["-I%s" % (include) for include in command["include"]]
 							+ [command["file"]])
 				options["hideStdout"] = True
+
+			else:
+				lib.failure("Unsupported compiler '%s' for lint" % (compiler))
 
 			# Run everything
 			lib.shellMulti(commandList,
