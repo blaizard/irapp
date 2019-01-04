@@ -31,7 +31,10 @@ pipeline {
 				{
 					stage('Setup %platform% Completed')
 					{
-						echo 'Setup %platform% Completed'
+						steps
+						{
+							echo 'Setup %platform% Completed'
+						}
 					}
 				}
 			}
