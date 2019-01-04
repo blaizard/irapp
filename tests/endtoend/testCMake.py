@@ -11,8 +11,10 @@ class TestShell(base.EndToEndTests):
 		initOutput = self.app("init")
 		self.assertIn("[INFO]", initOutput)
 		self.assertNotIn("[ERROR]", initOutput)
-
 		self.assertRegex(initOutput, r'CMake version: [0-9\.]+')
+
+		buildOutput = self.app("build")
+		print(buildOutput)
 
 if __name__ == '__main__':
 	base.EndToEndTests.main()

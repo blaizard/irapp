@@ -7,13 +7,13 @@ import unittest
 class TestShell(base.UnitTests):
 
 	def testSimple(self):
-		output = self.lib.shell(["echo", "hello"], captureStdout=True)
+		output = self.lib.shell(["echo", "hello"], capture=True)
 		self.assertEqual(output[0], "hello")
 
 	def testSimpleError(self):
 		self.assertRaises(OSError, self.lib.shell, (["notarecognizedcommand"]))
 		self.assertRaises(Exception, self.lib.shell, (["ssh", "-tt", "dfsfjisdfhjdsjofhohfdsfsdjfhdsfjkh"]))
-		output = self.lib.shell(["ssh", "-tt", "dfsfjisdfhjdsjofhohfdsfsdjfhdsfjkh"], captureStdout=True, ignoreError=True)
+		output = self.lib.shell(["ssh", "-tt", "dfsfjisdfhjdsjofhohfdsfsdjfhdsfjkh"], capture=True, ignoreError=True)
 		self.assertIn("dfsfjisdfhjdsjofhohfdsfsdjfhdsfjkh", output[0])
 
 	def testMulti(self):

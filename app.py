@@ -4,6 +4,7 @@
 import json
 import sys
 import os
+import platform
 import imp
 import subprocess
 import shutil
@@ -89,7 +90,13 @@ def readConfig(args, verbose=True):
 		},
 		"builds": {
 			# "gcc-release": { <options...> }		
-		}
+		},
+		"templates": {
+			"linux": {"run": "./%path%"},
+			"windows": {"run": "%path%"}
+		},
+		# Ignore a specific configuration
+		"ignore": []
 	}
 
 	# Read the configuration
@@ -98,6 +105,7 @@ def readConfig(args, verbose=True):
 		with f:
 			try:
 				configUser = json.load(f)
+				lib.configSanityCheck(configUser, user=True)
 				config.update(configUser)
 			except Exception as e:
 				lib.fatal("Could not parse configuration file '%s'; %s" % (str(args.configPath), str(e)))
@@ -107,9 +115,10 @@ def readConfig(args, verbose=True):
 
 	# Add parameters that are not meant to be modified
 	config.update({
+		"platform": "windows" if platform.system() == "Windows" else "linux",
 		"lib": lib,
 		"root": EXECUTABLE_DIRECTORY_PATH,
-		"pimpl": {},
+		"pimpl": {}
 	})
 
 	# Resolve all path and make them absolute, plus create the directories if it does not exists
@@ -133,6 +142,18 @@ def readConfig(args, verbose=True):
 	# Initialize all the classes
 	for moduleId, moduleClass in config["pimpl"].items():
 		config["pimpl"][moduleId] = moduleClass(config)
+
+	# Generate the ignore directorionary
+	config["ignoreDict"] = {}
+	for ignore in config["ignore"]:
+		keyList = ignore.split(".")
+		node = lastNode = config["ignoreDict"]
+		for key in keyList:
+			lastNode = node
+			node = lastNode.setdefault(key, {})
+			if isinstance(node, bool):
+				break
+		lastNode[key] = True
 
 	if verbose:
 		lib.info("Modules identified: %s" % (", ".join(config["types"])))
@@ -359,6 +380,34 @@ def run(args):
 		config["pimpl"][moduleId].runPost(commandList)
 
 """
+Shortcut to run the predefined tests
+"""
+def test(args):
+	# Read the configuration
+	config = readConfig(args, verbose=False)
+
+	def isValid(name, filterList):
+		for filt in filterList:
+			if filt.lower() in name:
+				return True
+		return True if len(filterList) == 0 else False
+
+	commandList = []
+	for typeIds, pathList in config["tests"].items():
+		for path in pathList:
+			if isValid(typeIds.lower(), args.filter) or isValid(path.lower(), args.filter):
+				for name in ["test", "run"]:
+					execTest = lib.getCommand(config, name, "%s.%s" % (config["platform"], typeIds), {"path": path})
+					if execTest:
+						commandList.append(execTest)
+						break
+
+	# Tweak the arguments to be compatible with the run command
+	setattr(args, "commandList", commandList)
+	setattr(args, "args", None)
+	run(args)
+
+"""
 Return the current hash or None if not available
 """
 def getCurrentHash():
@@ -555,6 +604,7 @@ if __name__ == "__main__":
 		"start": commands,
 		"stop": commands,
 		"run": run,
+		"test": test,
 		"update": update
 	}
 
@@ -573,6 +623,15 @@ if __name__ == "__main__":
 	parserRun.add_argument("-d", "--duration", type=int, action="store", dest="duration", default=0, help="Run the commands for a specific amount of time (in seconds).")
 	parserRun.add_argument("-t", "--timeout", type=int, action="store", dest="timeout", default=-1, help="Timeout (in seconds) until the iteration should be considered as invalid. If set to -1, an automatic timeout is set, calculated based on the previous run. If set to 0, no timeout is set.")
 	parserRun.add_argument("args", nargs=argparse.REMAINDER, help='Extra arguments to be passed to the command executed.')
+
+	parserTest = subparsers.add_parser("test", help='Execute registered tests.')
+	parserTest.add_argument("-e", "--endless", action="store_true", dest="endless", default=False, help="Run the command endlessly (until it fails).")
+	parserTest.add_argument("-v", "--verbose", action="store_true", dest="verbose", default=False, help="Force printing the output while running the command.")
+	parserTest.add_argument("-j", "--jobs", type=int, action="store", dest="nbJobs", default=1, help="Number of jobs to run in parallel. If 0 is used, the system will automatically pick the number of jobs based on the number of core.")
+	parserTest.add_argument("-i", "--iterations", type=int, action="store", dest="iterations", default=0, help="Number of iterations to be performed.")
+	parserTest.add_argument("-d", "--duration", type=int, action="store", dest="duration", default=0, help="Run the commands for a specific amount of time (in seconds).")
+	parserTest.add_argument("-t", "--timeout", type=int, action="store", dest="timeout", default=-1, help="Timeout (in seconds) until the iteration should be considered as invalid. If set to -1, an automatic timeout is set, calculated based on the previous run. If set to 0, no timeout is set.")
+	parserTest.add_argument("filter", nargs=argparse.REMAINDER, help='Test filter, a string that matches the test key and test names.')
 
 	parserInfo = subparsers.add_parser("info", help='Display information about the script and the loaded modules.')
 	parserInfo.add_argument("--apps", action="store_true", dest="apps", default=False, help="Display information related to the status of running applications.")

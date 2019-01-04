@@ -7,13 +7,6 @@ import os
 class Git(lib.Module):
 
 	@staticmethod
-	def config():
-		return {
-			# Ignore specific configuration from the patterns listed below
-			"gitignore.ignore": []
-		}
-
-	@staticmethod
 	def check(config):
 		return os.path.isdir(os.path.join(config["root"], ".git"))
 
@@ -99,19 +92,23 @@ class Git(lib.Module):
 
 		# Patterns for the various supported types
 		patterns = {
-			"Irapp": {
+			"irapp": {
+				"display": "Irapp",
 				"types": ["git"],
 				"patternList": Git.gitignoreIrapp()
 			},
-			"Git": {
+			"git": {
+				"display": "Git",
 				"types": ["git"],
 				"patternList": Git.gitignoreGit()
 			},
-			"Python": {
+			"python": {
+				"display": "Python",
 				"types": ["python"],
 				"patternList": Git.gitignorePython()
 			},
-			"C++": {
+			"cpp": {
+				"display": "C++",
 				"types": ["cmake"],
 				"patternList": Git.gitignoreCpp()
 			}
@@ -121,8 +118,10 @@ class Git(lib.Module):
 			if line.find("Automatically generated content by irapp") != -1:
 				gitIgnoreList = gitIgnoreList[:index]
 				break
+
+		# Delete redundant entries
 		for name, config in patterns.items():
-			if set(config["types"]).intersection(self.config["types"]) and name not in self.config["gitignore.ignore"]:
+			if set(config["types"]).intersection(self.config["types"]) and not self.isIgnore("gitignore", name):
 				gitIgnoreList[:] = [line for line in gitIgnoreList if line not in config["patternList"]]
 		gitIgnoreList = "\n".join(gitIgnoreList).rstrip().split("\n")
 
@@ -132,8 +131,8 @@ class Git(lib.Module):
 
 		# Add new entries
 		for name, config in patterns.items():
-			if set(config["types"]).intersection(self.config["types"]) and name not in self.config["gitignore.ignore"]:
-				gitIgnoreList += ([""] if len(gitIgnoreList) and gitIgnoreList[-1] else []) + ["# %s" % (name)] + config["patternList"]
+			if set(config["types"]).intersection(self.config["types"]) and not self.isIgnore("gitignore", name):
+				gitIgnoreList += ([""] if len(gitIgnoreList) and gitIgnoreList[-1] else []) + ["# %s" % (config["display"])] + config["patternList"]
 
 		# Write .gitignore
 		with open(os.path.join(self.config["root"], ".gitignore"),  "w") as f:

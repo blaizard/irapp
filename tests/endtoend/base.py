@@ -54,9 +54,14 @@ class EndToEndTests(unittest.TestCase):
 	Execute commands on the app and return the output
 	"""
 	def app(self, *args):
-		process = subprocess.Popen([sys.executable, "./app.py"] + list(args), cwd=self.testDirPath, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+		process = subprocess.Popen([sys.executable, "./app.py"] + list(args), cwd=self.testDirPath, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 		stdout, stderr = process.communicate()
-		return stdout.decode("utf-8", "ignore")
+
+		output = stdout.decode("utf-8", "ignore")
+		if process.returncode != 0:
+			print(output)
+			raise Exception("Failure: retcode=%s" % (str(process.returncode)))
+		return output
 
 	def assertRegex(self, string, regex):
 		return re.search(regex, string)

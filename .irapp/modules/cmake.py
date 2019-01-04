@@ -14,12 +14,15 @@ class CMake(lib.Module):
 
 	@staticmethod
 	def config():
-		if lib.which("ninja"):
-			generator = "Ninja"
-		else:
-			generator = "Unix Makefiles"
-
 		return {
+			"dependencies": {
+				"debian": ["cmake", "ninja-build", "cppcheck", "g++", "clang", "clang-tidy", "lcov"]
+			},
+			"templates": {
+				"gtest": {
+					"junit": "%run% --gtest_output=xml:%report%"
+				}
+			},
 			"buildDir": "build",
 			"builds": {
 				"gcc-debug": {
@@ -31,7 +34,10 @@ class CMake(lib.Module):
 				"gcc-coverage": {
 					"type": "Debug",
 					"compiler": "gcc",
-					"coverage": True
+					"coverage": True,
+					"links": {
+						"Coverage Report": "%buildDir%/coverage/index.html"
+					}
 				},
 				"gcc-release": {
 					"type": "Release",
@@ -47,7 +53,7 @@ class CMake(lib.Module):
 				},
 				"clang-tidy": {
 					"type": "Debug",
-					"compiler": "clang",
+					"compiler": "clang-tidy",
 					"lint": True
 				},
 				"cppcheck": {
@@ -55,21 +61,8 @@ class CMake(lib.Module):
 					"lint": True
 				}
 			},
-			"buildGenerator": generator,
+			"buildGenerator": "Ninja" if lib.which("ninja") else "Unix Makefiles",
 			"staticAnalyzerIgnore": [],
-		}
-
-	def getCommandsTemplate(self):
-		return {
-			"junit": "%run% --gtest_output=xml:%report%"
-		}
-
-	"""
-	Return the dependencies for the various supported platforms
-	"""
-	def dependencies(self):
-		return {
-			"debian": ["cmake", "ninja-build", "cppcheck", "g++", "clang", "clang-tidy", "lcov"]
 		}
 
 	def hasCoverage(self, buildType=None):
@@ -160,7 +153,7 @@ class CMake(lib.Module):
 					isLintError = True
 
 			# ---- CLANG
-			elif updatedBuildConfig["compiler"] == "clang":
+			elif updatedBuildConfig["compiler"] in ["clang", "clang-tidy"]:
 				cCompiler = lib.which("clang")
 				cxxCompiler = lib.which("clang++")
 				if updatedBuildConfig["coverage"]:
@@ -288,7 +281,7 @@ class CMake(lib.Module):
 				clangTidyVersion = lib.shell(["clang-tidy", "--version"], capture=True)
 				lib.info("clang-tidy version: %s" % (re.search(r'([\d.]+)', clangTidyVersion[1]).group(1)))
 				for command in compileCommandList:
-					commandList.append(["clang-tidy", "-p", command["directory"], command["file"]])
+					commandList.append(["clang-tidy", "-p", command["directory"], "-quiet", command["file"]])
 
 			elif compiler == "cppcheck":
 				# Print clang-tidy version
@@ -305,9 +298,17 @@ class CMake(lib.Module):
 				options["hideStdout"] = True
 
 			# Run everything
-			lib.shellMulti(commandList, cwd=".", verbose=True, verboseCommand=True, nbJobs=self.config["parallelism"], hideStdout=options["hideStdout"], hideStderr=options["hideStderr"])
+			lib.shellMulti(commandList,
+					cwd=".",
+					verbose=True,
+					verboseCommand=True,
+					nbJobs=self.config["parallelism"],
+					hideStdout=options["hideStdout"],
+					hideStderr=options["hideStderr"],
+					ignoreError=True)
 		else:
-			lib.shell(["cmake", "--build", os.path.join(buildDirPath, buildType), "--target", target if target else "all", "--", "-j%i" % (self.config["parallelism"])], cwd=self.config["root"])
+			lib.shell(["cmake", "--build", os.path.join(buildDirPath, buildType), "--target", target if target else "all", "--", "-j%i" % (self.config["parallelism"])],
+					cwd=self.config["root"])
 
 	def info(self, verbose):
 
@@ -337,7 +338,7 @@ class CMake(lib.Module):
 
 		if verbose:
 			lib.info("Build configurations (using '%s'):" % (self.config["buildGenerator"]))
-			templateStr = "%15s %1s %8s %8s %4s %4s %s"
+			templateStr = "%15s %1s %8s %10s %4s %4s %s"
 			lib.info(templateStr % ("Name", "", "Type", "Compiler", "Cov.", "Lint", "Path"))
 			for config in info["configList"]:
 				lib.info(templateStr % (config["id"], "x" if config["default"] else "", config["type"], config["compiler"], "x" if config["coverage"] else "", "x" if config["lint"] else "", config["path"]))

@@ -15,6 +15,9 @@ class Python(lib.Module):
 				"v3": {
 					"executable": "python3"
 				}
+			},
+			"dependencies": {
+				"debian": ["python2.7", "python3"]
 			}
 		}
 
@@ -22,12 +25,4 @@ class Python(lib.Module):
 		buildType = self.getDefaultBuildType()
 		return {
 			"run": self.getConfig(["builds", buildType, "executable"], "python") + " %path%"
-		}
-
-	"""
-	Return the dependencies for the various supported platforms
-	"""
-	def dependencies(self):
-		return {
-			"debian": ["python2.7", "python3"]
 		}

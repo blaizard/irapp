@@ -23,7 +23,6 @@ except:
 # ---- Local dependencies -----------------------------------------------------
 
 commands = imp.load_source('commands', os.path.join(os.path.dirname(__file__), 'commands.py'))
-types = imp.load_source('types', os.path.join(os.path.dirname(__file__), 'types.py'))
 
 # ---- Logging methods --------------------------------------------------------
 
@@ -94,10 +93,84 @@ def deepMerge(dst, src):
 		if isinstance(value, dict):
 			node = dst.setdefault(key, {})
 			deepMerge(node, value)
+		elif isinstance(value, list):
+			node = dst.setdefault(key, [])
+			node += value
 		else:
 			dst[key] = value
 
 	return dst
+
+"""
+Ensure the proper format of the configuration
+"""
+def configSanityCheck(config, user=False):
+
+	def assertTypes(config, key, typeList, example):
+		"""
+		Assert that the iterable value passed into argument is of the types specified
+		"""
+		def assertTypesInternal(values, typeList):
+			# Handle the case where str can be unicode and since there is a major difference between python2 and 3,
+			# it needs to be addressed with basestring or str
+			if typeList[0] == str:
+				if not isinstance(values, basestring if sys.version_info.major == 2 else str):
+					return False
+			elif not isinstance(values, typeList[0]):
+				return False
+
+			if len(typeList) > 1:
+				if isinstance(values, dict):
+					for key, value in values.items():
+						if not assertTypesInternal(key, [str]) or not assertTypesInternal(value, typeList[1:]):
+							return False
+				elif isinstance(values, list):
+					for value in values:
+						if not assertTypesInternal(value, typeList[1:]):
+							return False
+			return True
+
+		if key in config:
+			if not assertTypesInternal(config[key], typeList):
+				fatal("The configuration {... \"%s\": %s ...} is not of valid format, it should be of type %s; for example: {... \"%s\": %s ...}" % (
+						key, json.dumps(config[key]), "::".join([t.__name__ for t in typeList]), key, json.dumps(example)))
+
+	if not isinstance(config, dict):
+		fatal("Configuration must be a dictionary: %s" % (str(config)))
+
+	if user:
+		for key in ["lib", "root", "pimpl"]:
+			if key in config:
+				fatal("The configuration key '%s' is protected and cannot be altered" % (key))
+
+	assertTypes(config, "parallelism", [int], 4)
+	assertTypes(config, "types", [list, str], ["python", "cmake"])
+	assertTypes(config, "start", [dict, list, str], {"server": ["cd server/bin", "daemon server ./main"]})
+	assertTypes(config, "dependencies", [dict, list, str], {"debian": ["libssl-dev", "libcurl-dev"]})
+	assertTypes(config, "tests", [dict, list, str], {"gtest": ["build/bin/tests"], "python.unittest": ["tests/testSimple.py"]})
+	assertTypes(config, "builds", [dict, dict], {"gcc-release": {"compiler": "gcc", "lint": True}})
+	assertTypes(config, "templates", [dict, dict, str], {"debian": {"run": "./%path%"}})
+	assertTypes(config, "ignore", [list, str], ["git.ignore.irapp"])
+
+"""
+Return the specific command based on the attributes and the global configuration
+"""
+def getCommand(config, commandType, typeIds, args):
+	# Build the description from the typeIds
+	desc = {}
+	for typeId in typeIds.split("."):
+		if typeId in config["pimpl"]:
+			desc.update(config["pimpl"][typeId].getCommandsTemplate())
+		elif typeId in config["templates"]:
+			desc.update(config["templates"][typeId])
+
+	if commandType not in desc:
+		return None
+	templateStr = desc[commandType]
+
+	# Add the custom arguments
+	desc.update(args)
+	return Template(templateStr).process(desc, recursive=True, removeEmptyLines=False)
 
 """
 Return the path of the executable if availabl, None otherwise
@@ -185,7 +258,7 @@ It supports a limited number of iterations, of time or other options.
 @param nbIterations Total number of iteration of the commandList before terminating. If 0, it will be endless.
 @param isAutoTimeout If set, it will automatically calculate a timeout for each iteration, this timeout is based on previous run.
 """
-def shellMulti(commandList, cwd=".", nbIterations=1, isAutoTimeout=True, verbose=True, verboseCommand=False, timeout=0, duration=0, nbJobs=1, hideStdout=False, hideStderr=False):
+def shellMulti(commandList, cwd=".", nbIterations=1, isAutoTimeout=True, verbose=True, verboseCommand=False, timeout=0, duration=0, nbJobs=1, hideStdout=False, hideStderr=False, ignoreError=False):
 
 	# Custom process class to control process pool
 	class Thread(threading.Thread):
@@ -264,7 +337,7 @@ def shellMulti(commandList, cwd=".", nbIterations=1, isAutoTimeout=True, verbose
 					signal = threading.Event()
 					workerList[i] = {
 						"command": " ".join(commandList[commandIndex]),
-						"worker": Thread(target=shell, args=(commandList[commandIndex], cwd, (not verbose), False, None if verbose else workerContext[i], signal, hideStdout, hideStderr)),
+						"worker": Thread(target=shell, args=(commandList[commandIndex], cwd, (not verbose), ignoreError, None if verbose else workerContext[i], signal, hideStdout, hideStderr)),
 						"time": timeit.default_timer(),
 						"iterationId": curIteration,
 						"signal": signal
@@ -620,24 +693,6 @@ class Module:
 		return {}
 
 	"""
-	Return the specific command based on the attributes
-	"""
-	def getCommand(self, commandType, typeIds, args):
-		# Build the description from the typeIds
-		desc = {"run": "./%path%"}
-		for typeId in typeIds.split("."):
-			if typeId in self.config["pimpl"]:
-				desc.update(self.config["pimpl"][typeId].getCommandsTemplate())
-			elif typeId in types.Types:
-				desc.update(types.Types[typeId])
-
-		if commandType not in desc:
-			return None
-		templateStr = desc[commandType]
-		desc.update(args)
-		return Template(templateStr).process(desc, recursive=True, removeEmptyLines=False)
-
-	"""
 	Get the configuration value for this modules.
 	Start to look in the specific values, if not, look in the generic.
 	If no value is present, returns noneValue
@@ -655,7 +710,7 @@ class Module:
 		genericValue = getValue(self.__class__.config()) if onlySpecific else getValue(self.config)
 		# Merge the values
 		if isinstance(genericValue, dict) and isinstance(specificValue, dict):
-			return self.config["lib"].deepMerge(genericValue, specificValue)
+			return deepMerge(genericValue, specificValue)
 		if specificValue != None:
 			return specificValue
 		if genericValue != None:
@@ -667,6 +722,18 @@ class Module:
 	"""
 	def isConfig(self, keyList=[], onlySpecific=False):
 		return False if self.getConfig(keyList, onlySpecific=onlySpecific) == None else True
+
+	"""
+	Asses if a confguration is ignored or not
+	"""
+	def isIgnore(self, *keys):
+		ignoreDict = self.config["ignoreDict"]
+		for key in [self.name()] + list(keys):
+			if key in ignoreDict:
+				if isinstance(ignoreDict[key], bool):
+					return True
+				ignoreDict = ignoreDict[key]
+		return False
 
 	"""
 	Generates a log factory, used to create logs for an application
@@ -769,12 +836,6 @@ class Module:
 				return name
 
 		return None
-
-	"""
-	Return the dependencies of this specific module per platform
-	"""
-	def dependencies(self):
-		return {}
 
 	"""
 	Command invocation template

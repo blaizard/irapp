@@ -15,8 +15,15 @@ class Jenkins(lib.Module):
 		return {
 			"staticAnalyzer": True,
 			"staticAnalyzerIgnore": [],
-			"dependencies": [],
-			"tests": {}
+			"dependencies": {
+				"debian": ["valgrind"]
+			},
+			"tests": {},
+			"templates": {
+				"debian": {
+					"run": "./%path%"
+				}
+			}
 		}
 
 	"""
@@ -84,18 +91,7 @@ class Jenkins(lib.Module):
 			"coverageDir": os.path.join(self.config["buildDir"], "coverage")
 		})
 
-	def dependencies(self):
-		return {
-			"debian": ["valgrind"]
-		}
-
 	def init(self):
-
-		# Build the dependencies per platform
-		dependencies = {}
-		for moduleId, module in self.config["pimpl"].items():
-			for platform, dependencyList in module.dependencies().items():
-				dependencies[platform] = (dependencies[platform] if platform in dependencies else set()) | set(dependencyList)
 
 		# Generate the configs
 		builds = {}
@@ -109,9 +105,12 @@ class Jenkins(lib.Module):
 
 		# Generate the various dockerfiles
 		configs = {}
-		for platform, deps in dependencies.items():
+		for platform, deps in self.config["dependencies"].items():
+			# Remove duplicates and sort the list to ensure the order stays the same after each builds
+			deps = list(set(deps))
+			deps.sort()
 			configs[platform] = {
-				"dockerfilePath": self.loadAndPublishDockerfile("%s.dockerfile" % (platform), list(deps)),
+				"dockerfilePath": self.loadAndPublishDockerfile("%s.dockerfile" % (platform), deps),
 				"builds": {}
 			}
 			# Set default values to build
@@ -123,10 +122,24 @@ class Jenkins(lib.Module):
 					"junit": False,
 					"tests": [],
 					"configs": {},
+					# Links to be added
+					"links": {},
 					# Specific options
 					"valgrindSuppPath": valgrindSuppPath
 				}
 				updatedOptions.update(options)
+
+				# Update the links
+				for key, value in updatedOptions["links"].items():
+					linkPath = lib.Template(value).process(self.config)
+					temp, extension = os.path.splitext(linkPath)
+					fileType = {".html": "html", ".htm": "html"}
+					updatedOptions["links"][key] = {
+						"path": linkPath,
+						"dirname": os.path.dirname(linkPath),
+						"basename": os.path.basename(linkPath),
+						"type": fileType[extension.lower()] if extension.lower() in fileType else "unknown"
+					}
 
 				if not updatedOptions["lint"]:
 					# Set temporarly the build configurations
@@ -137,8 +150,8 @@ class Jenkins(lib.Module):
 					for typeIds, testList in self.config["tests"].items():
 						for path in testList:
 							for name in ["junit", "test", "run"]:
-								execTest = self.getCommand(name, typeIds, {
-										"report": "%s.%s_tests_%i_%s.report" % (platform, buildName.replace(":", "."), lib.uniqueId(), name),
+								execTest = lib.getCommand(self.config, name, "%s.%s" % (platform, typeIds), {
+										"report": "%s.%s_%i_%s.report" % (platform, buildName.replace(":", "."), lib.uniqueId(), name),
 										"path": path})
 								if execTest:
 									if name == "junit":
