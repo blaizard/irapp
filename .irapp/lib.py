@@ -91,7 +91,7 @@ def uniqueId():
 """
 Delete a directory and all its content
 """
-def rmtree(path):
+def rmtree(path, ignoreError=False):
 	# This is needed for Windows
 	def handleRemoveReadonly(func, path, exc):
 		excvalue = exc[1]
@@ -103,13 +103,19 @@ def rmtree(path):
 	retryCounter = 3
 	while retryCounter:
 		shutil.rmtree(path, ignore_errors=True, onerror=handleRemoveReadonly)
-		if not os.path.exists(path):
+		if not os.path.exists(path) or ignoreError:
 			break
 		retryCounter -= 1
 		# Wait for 1s, this is needed for Windows (probably for some cache to be flushed)
 		time.sleep(1)
 	if retryCounter == 0:
 		fatal("Unable to delete directory '%s'" % (str(path)))
+
+"""
+Build the directory of directories missing to complete the path
+"""
+def mkdir(path):
+	os.makedirs(path)
 
 """
 Extract the version number from the output received by a shell command

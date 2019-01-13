@@ -242,7 +242,7 @@ def action(args):
 		for cleanup in ["assets", "artifacts"]:
 			if os.path.isdir(config[cleanup]):
 				lib.rmtree(config[cleanup])
-				os.makedirs(config[cleanup])
+				lib.mkdir(config[cleanup])
 		for moduleId in config["types"]:
 			config["pimpl"][moduleId].init()
 

@@ -24,6 +24,7 @@ class CMake(lib.Module):
 				}
 			},
 			"buildDir": "build",
+			"outputDir": "build/bin",
 			"builds": {
 				"gcc-debug": {
 					"type": "Debug",
@@ -95,16 +96,18 @@ class CMake(lib.Module):
 
 	def init(self):
 
+		buildDirPath = os.path.join(self.config["root"], self.getConfig(["buildDir"]))
+		outputDirPath = os.path.join(self.config["root"], self.getConfig(["outputDir"])) if self.getConfig(["outputDir"]) else None
+
 		# Print cmake version
 		cmakeVersion = lib.shell(["cmake", "--version"], capture=True)
 		lib.info("CMake version: %s" % (lib.getVersion(cmakeVersion)))
 
 		# Removing CMake build directory
-		buildDirPath = os.path.join(self.config["root"], self.getConfig(["buildDir"]))
-		lib.info("Cleanup CMake build directory at '%s'" % (buildDirPath))
 		# Try to cleanup the build directory, not critical if it fails
-		lib.shell(["rm", "-rfd", os.path.basename(buildDirPath)], cwd=os.path.dirname(buildDirPath), ignoreError=True)
-		lib.shell(["mkdir", os.path.basename(buildDirPath)], cwd=os.path.dirname(buildDirPath), ignoreError=True)
+		lib.info("Cleanup CMake build directory at '%s'" % (buildDirPath))
+		lib.rmtree(os.path.basename(buildDirPath), ignoreError=True)
+		lib.mkdir(os.path.basename(buildDirPath))
 
 		# Remove all CMakeCache.txt if existing
 		for root, dirs, files in os.walk(self.config["root"]):
@@ -131,6 +134,12 @@ class CMake(lib.Module):
 
 			# Set the command
 			commandList = ["cmake", "-G", self.getConfig(["buildGenerator"]), "-DCMAKE_BUILD_TYPE=%s" % (updatedBuildConfig["type"])]
+
+			# Add the output directory if any
+			if outputDirPath:
+				commandList += ["-DCMAKE_RUNTIME_OUTPUT_DIRECTORY='%s'" % (outputDirPath),
+						"-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY='%s'" % (outputDirPath),
+						"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY='%s'" % (outputDirPath)]
 
 			# ---- Compiler specific options ----------------------------------
 
@@ -192,11 +201,8 @@ class CMake(lib.Module):
 
 			# -----------------------------------------------------------------
 
-			# Mark the configuration as available if it is for this platform
-			#self.config["builds"][name]["available"] = True
-
 			lib.info("Initializing build configuration '%s' with generator '%s'" % (name, str(self.getConfig(["buildGenerator"]))))
-			lib.shell(["mkdir", "-p", name], cwd=buildDirPath)
+			lib.mkdir(os.path.join(buildDirPath, name))
 			buildTypePath = os.path.join(buildDirPath, name)
 
 			commandList.append("../..")
@@ -216,16 +222,13 @@ class CMake(lib.Module):
 		# Set the defautl build if none explicitly defined
 		elif not defaultBuildType:
 			self.setDefaultBuildType(firstValidBuild)
-			#self.config["builds"][firstValidBuild]["default"] = True
 
 	def clean(self):
-
-		buildDirPath = os.path.join(self.config["root"], self.getConfig(["buildDir"]))
-		lib.info("Cleaning %s" % (buildDirPath))
-		lib.shell(["rm", "-rfd", os.path.join(buildDirPath, "bin")], cwd=self.config["root"])
-		lib.shell(["rm", "-rfd", os.path.join(buildDirPath, "lib")], cwd=self.config["root"])
-		lib.shell(["mkdir", os.path.join(buildDirPath, "bin")], cwd=self.config["root"])
-		lib.shell(["mkdir", os.path.join(buildDirPath, "lib")], cwd=self.config["root"])
+		outputDirPath = os.path.join(self.config["root"], self.getConfig(["outputDir"])) if self.getConfig(["outputDir"]) else None
+		if outputDirPath:
+			lib.info("Cleaning output directory '%s'" % (outputDirPath))
+			lib.rmtree(outputDirPath)
+			lib.mkdir(outputDirPath)
 
 	def build(self, target=None):
 
@@ -381,8 +384,8 @@ class CMake(lib.Module):
 
 			# Clean-up and create the coverage directory
 			coverageDir = os.path.join(self.config["root"], self.getConfig(["buildDir"]), "coverage")
-			lib.shell(["rm", "-rfd", coverageDir], cwd=self.config["root"])
-			lib.shell(["mkdir", coverageDir], cwd=self.config["root"])
+			lib.rmtree(coverageDir)
+			lib.mkdir(coverageDir)
 
 			# Reset the coverage counters
 			lib.shell(["lcov", "--directory", "'%s'" % (buildDir), "--zerocounters", "-q"], cwd=self.config["root"])
