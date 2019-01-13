@@ -16,7 +16,8 @@ import math
 import threading
 import time
 import multiprocessing
-
+import errno
+import stat
 try:
 	from queue import Queue
 except:
@@ -27,11 +28,14 @@ EXECUTABLE_PATH = os.path.realpath(__file__)
 EXECUTABLE_DIRECTORY_PATH = os.path.realpath(os.path.dirname(__file__))
 EXECUTABLE_NAME = os.path.basename(__file__)
 DEPENDENCIES_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp")
-TEMP_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/temp")
-ASSETS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/assets")
-ARTIFACTS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/artifacts")
-LOG_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp/log")
-DEFAULT_CONFIG_FILE = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp.json")
+# Note, it is important the the temporary directory and the log directory do not match any other
+# used directories, otherwise they will not be deleted during the update process.
+# For example, "temp" would match with "templates".
+TEMP_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp", "tmp")
+ASSETS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp", "assets")
+ARTIFACTS_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp", "artifacts")
+LOG_DIRECTORY_PATH = os.path.join(EXECUTABLE_DIRECTORY_PATH, ".irapp", "log")
+DEFAULT_CONFIG_FILE = ".irapp.json"
 
 """
 Load the necessary dependencies
@@ -54,7 +58,7 @@ def loadDependencies():
 """
 Read the configruation file and create it if it does not exists.
 """
-def readConfig(args, verbose=True):
+def readConfig(args, verbose=True, dispatch=False, forceDispatchResults=False, forceDispatchSequential=False):
 	global lib
 
 	# Read the dependencies
@@ -72,6 +76,8 @@ def readConfig(args, verbose=True):
 		"parallelism": multiprocessing.cpu_count(),
 		# List of modules to be supported
 		"types": [],
+		# Dispatch commands to other subprojects
+		"dispatch": [],
 		# List of actions to be performed. The action called "default", will be executed if no
 		# specific action is called.
 		"start": {
@@ -93,15 +99,23 @@ def readConfig(args, verbose=True):
 		},
 		"templates": {
 			"linux": {"run": "./%path%"},
+			"darwin": {"run": "./%path%"},
 			"windows": {"run": "%path%"}
 		},
 		# Ignore a specific configuration
 		"ignore": []
 	}
 
+	# Add logging prefix
+	if args.dispatch:
+		lib.logPrefix = args.dispatch
+
+	if not os.path.isdir(args.rootPath):
+		lib.fatal("Root path (%s) is not a valid directory" % (args.rootPath))
+
 	# Read the configuration
 	try:
-		f = open(args.configPath, "r")
+		f = open(os.path.join(args.rootPath, args.configPath), "r")
 		with f:
 			try:
 				configUser = json.load(f)
@@ -115,10 +129,14 @@ def readConfig(args, verbose=True):
 
 	# Add parameters that are not meant to be modified
 	config.update({
-		"platform": "windows" if platform.system() == "Windows" else "linux",
+		# Value is either: "linux", "windows" or "macos"
+		"platform": "windows" if sys.platform == "win32" or sys.platform == "cygwin" else ("linux" if sys.platform.startswith("linux") else "macos"),
 		"lib": lib,
-		"root": EXECUTABLE_DIRECTORY_PATH,
-		"pimpl": {}
+		"root": os.path.realpath(args.rootPath),
+		"pimpl": {},
+		"caller": True if not args.dispatch else False,
+		"dispatched": True if args.dispatch or len(config["dispatch"]) else False,
+		"dispatchResults": {}
 	})
 
 	# Resolve all path and make them absolute, plus create the directories if it does not exists
@@ -135,15 +153,23 @@ def readConfig(args, verbose=True):
 		if moduleId in config["types"] or moduleClass.check(config):
 			typeList.append(moduleId)
 			config["pimpl"][moduleId] = moduleClass
-			# Update the default configuration
-			config = lib.deepMerge(moduleClass.config(), config)
+			config[moduleId] = moduleClass.config()
+			# Merge specific items with the global configuration if present
+			for key in ["templates"]:
+				if key in config[moduleId]:
+					config[key] = lib.deepMerge(config[key], config[moduleId][key])
 	config["types"] = typeList
 
-	# Initialize all the classes
+	# Initialize the module instances
 	for moduleId, moduleClass in config["pimpl"].items():
 		config["pimpl"][moduleId] = moduleClass(config)
+		# Add some specific keys
+		config[moduleId].update({
+			"buildType": config["pimpl"][moduleId].getDefaultBuildType,
+			"build": config["pimpl"][moduleId].getDefaultBuild
+		})
 
-	# Generate the ignore directorionary
+	# Generate the ignore dictionaries
 	config["ignoreDict"] = {}
 	for ignore in config["ignore"]:
 		keyList = ignore.split(".")
@@ -155,9 +181,51 @@ def readConfig(args, verbose=True):
 				break
 		lastNode[key] = True
 
+	# Have a specific path per module (specific to this module)
+	# ex: git.[...]
+
+	# If some commands need to be dispatched, do it now
+	if dispatch and len(config["dispatch"]):
+		dispatchCommand(config, args, forceDispatchResults, forceDispatchSequential)
+
 	if verbose:
 		lib.info("Modules identified: %s" % (", ".join(config["types"])))
 	return config
+
+"""
+Dispatch commands to nested modules if needed
+"""
+def dispatchCommand(config, args, forceDispatchResults, forceDispatchSequential):
+
+	# Look for the extra arguments
+	extraArgs = []
+	for index, arg in enumerate(sys.argv[1:]):
+		if arg == args.command:
+			extraArgs = sys.argv[(index + 1):]
+			break
+
+	# Gather the output in JSON for some commands or if explcitly set
+	fetchJsonOutput = getattr(args, "json", False) or (config["caller"] and forceDispatchResults)
+
+	# Add the --json option to the arguments
+	if fetchJsonOutput and "--json" not in extraArgs:
+		extraArgs.insert(1, "--json")
+
+	# Check if irapps is configured as a dispatcher
+	for index, rootPath in enumerate(config["dispatch"]):
+		shellCommand = [sys.executable, __file__, "--root", rootPath, "--dispatch", "%s[%i] " % (args.dispatch if args.dispatch else "", index + 1)] + extraArgs
+		if fetchJsonOutput:
+			outputRaw = lib.shell(shellCommand, capture=True)
+			try:
+				output = json.loads(" ".join(outputRaw))
+				config["dispatchResults"][rootPath] = output
+			except:
+				lib.fatal("Unable to read JSON: %s" % (" ".join(outputRaw)))
+		elif forceDispatchSequential:
+			lib.shell(shellCommand)
+		else:
+			# Run the command in parallel
+			lib.shell(shellCommand, blocking=False)
 
 # ---- Supported actions -----------------------------------------------------
 
@@ -166,14 +234,14 @@ Entry point for all action mapped to the supported and enabled modules.
 """
 def action(args):
 	# Read the configuration
-	config = readConfig(args)
+	config = readConfig(args, dispatch=True)
 
 	lib.info("Running command '%s' in '%s'" % (str(args.command), str(config["root"])))
 	if args.command == "init":
 		# Clean up some directory
 		for cleanup in ["assets", "artifacts"]:
 			if os.path.isdir(config[cleanup]):
-				shutil.rmtree(config[cleanup])
+				lib.rmtree(config[cleanup])
 				os.makedirs(config[cleanup])
 		for moduleId in config["types"]:
 			config["pimpl"][moduleId].init()
@@ -181,9 +249,13 @@ def action(args):
 	elif args.command == "build":
 		allbuildTypeList = [buildType for buildType in args.configList if buildType.find(":") == -1]
 		specificbuildTypes = {buildType.split(":")[0]: buildType.split(":")[1] for buildType in args.configList if buildType.find(":") != -1}
-		for moduleId in specificbuildTypes:
-			if not moduleId in config["types"]:
-				lib.fatal("The module '%s' is not enabled for this configuration" % (moduleId))
+
+		# Ensure that the configurations are valid
+		if not config["dispatched"]:
+			for moduleId in specificbuildTypes:
+				if not moduleId in config["types"]:
+					lib.fatal("The module '%s' is not enabled for this configuration" % (moduleId))
+
 		buildTypesUsed = set()
 		for moduleId in config["types"]:
 
@@ -193,13 +265,15 @@ def action(args):
 					buildTypesUsed.add(buildType)
 			if moduleId in specificbuildTypes:
 				if not config["pimpl"][moduleId].setDefaultBuildType(specificbuildTypes[moduleId]):
-					lib.fatal("Unsupported build configuration '%s' for '%s'" % (specificbuildTypes[moduleId], moduleId))
+					if not config["dispatched"]:
+						lib.fatal("Unsupported build configuration '%s' for '%s'" % (specificbuildTypes[moduleId], moduleId))
 
 			config["pimpl"][moduleId].build(args.target)
 
 		# Ensure that all build configurations have been used
-		for buildTypesNotUsed in set(allbuildTypeList) - buildTypesUsed:
-			lib.warning("The build configuration '%s' has not been used" % (buildTypesNotUsed))
+		if not config["dispatched"]:
+			for buildTypesNotUsed in set(allbuildTypeList) - buildTypesUsed:
+				lib.warning("The build configuration '%s' has not been used" % (buildTypesNotUsed))
 
 	elif args.command == "clean":
 		for moduleId in config["types"]:
@@ -210,7 +284,7 @@ Application/command related actions
 """
 def commands(args):
 	# Read the configuration
-	config = readConfig(args)
+	config = readConfig(args, dispatch=True, forceDispatchSequential=(args.command in ["stop"]))
 
 	idList = args.idList
 	lib.info("Executing '%s' on %s" % (args.command, ", ".join(idList)))
@@ -225,11 +299,12 @@ def commands(args):
 
 		# Ensure not wrong ID is set
 		for commandId in idList:
-			if commandId != "all" and commandId not in commandsDescs:
+			if not config["dispatched"] and commandId != "all" and commandId not in commandsDescs:
 				lib.fatal("Unknown command preset '%s'" % (commandId))
 
+		# Build the list
 		if "all" not in idList:
-			commandsDescs = {commandId: commandsDescs[commandId] for commandId in idList}
+			commandsDescs = {commandId: commandsDescs[commandId] for commandId in idList if commandId in commandsDescs}
 
 		for commandId, commandList in commandsDescs.items():
 			lib.info("Starting command preset '%s'" % (commandId))
@@ -246,11 +321,14 @@ Print information regarding the program and loaded modules
 """
 def info(args):
 
-	info = {}
 	verbose = not args.json
 
 	# Read the configuration
-	config = readConfig(args, verbose)
+	config = readConfig(args, verbose, dispatch=True, forceDispatchResults=True)
+
+	info = {
+		"dispatchResults": config["dispatchResults"]
+	}
 
 	# Select what to print
 	printAll = False if args.apps else True
@@ -265,9 +343,16 @@ def info(args):
 	if printModules:
 		buildList = []
 		for moduleId in config["types"]:
-			buildList += ["%s:%s" % (moduleId, build) for build in config["pimpl"][moduleId].getConfig(["builds"], noneValue={}, onlySpecific=True).keys()]
+			buildList += ["%s:%s" % (moduleId, build) for build in config["pimpl"][moduleId].getConfig(["builds"], default={}, onlySpecific=True).keys()]
 			info[moduleId] = config["pimpl"][moduleId].info(verbose)
-		if buildList:
+		# Merge the dispatched layers
+		for key, dispatch in config["dispatchResults"].items():
+			if "buildList" in dispatch:
+				buildList += dispatch["buildList"]
+		# Cleanup doubles
+		buildList = list(set(buildList))
+		buildList.sort()
+		if verbose and buildList:
 			lib.info("Build configurations: %s" % (", ".join(buildList)))
 		info["buildList"] = buildList
 
@@ -275,6 +360,11 @@ def info(args):
 		info["statusList"] = []
 		for moduleId in config["types"]:
 			info["statusList"] += config["pimpl"][moduleId].getStatusList()
+		# Merge results from dispatched layers
+		for key, dispatch in config["dispatchResults"].items():
+			for status in dispatch["statusList"]:
+				if not any(x for x in info["statusList"] if x["pid"] == status["pid"]):
+					info["statusList"].append(status)
 
 		# Print the status list if any
 		if verbose and len(info["statusList"]):
@@ -318,9 +408,9 @@ def info(args):
 """
 Run the program specified
 """
-def run(args):
+def run(args, verboseConfig=True):
 	# Read the configuration
-	config = readConfig(args)
+	config = readConfig(args, verbose=verboseConfig, dispatch=False)
 
 	# Build the list of commands to be executed
 	commandList = [shlex.split(cmd) for cmd in args.commandList] + ([args.args] if args.args else [])
@@ -365,7 +455,8 @@ def run(args):
 
 	try:
 		lib.shellMulti(commandList,
-				cwd=".",
+				# This must stay root directory it is critical to make dispath feature work with tests
+				cwd=config["root"],
 				nbIterations=totalIterations,
 				isAutoTimeout=isAutoTimeout,
 				verbose=verbose,
@@ -384,7 +475,7 @@ Shortcut to run the predefined tests
 """
 def test(args):
 	# Read the configuration
-	config = readConfig(args, verbose=False)
+	config = readConfig(args, verbose=True, dispatch=True)
 
 	def isValid(name, filterList):
 		for filt in filterList:
@@ -402,10 +493,18 @@ def test(args):
 						commandList.append(execTest)
 						break
 
+	# Ensure there is at least one command
+	if len(commandList) == 0:
+		# Gracefully exit in case this is a dispatched command
+		if config["dispatched"]:
+			return
+		else:
+			lib.fatal("There are no valid test%s" % (" or none are matching with %s" % ", ".join(["'%s'" % (filt) for filt in args.filter]) if args.filter else ""))
+
 	# Tweak the arguments to be compatible with the run command
 	setattr(args, "commandList", commandList)
 	setattr(args, "args", None)
-	run(args)
+	run(args, verboseConfig=False)
 
 """
 Return the current hash or None if not available
@@ -439,7 +538,7 @@ def update(args):
 
 	# Create and cleanup the temporary directory
 	if os.path.isdir(TEMP_DIRECTORY_PATH):
-		shutil.rmtree(TEMP_DIRECTORY_PATH)
+		lib.rmtree(TEMP_DIRECTORY_PATH)
 	if not os.path.exists(TEMP_DIRECTORY_PATH):
 		os.makedirs(TEMP_DIRECTORY_PATH)
 
@@ -465,7 +564,7 @@ def update(args):
 		for name in dirs:
 			fullPath = os.path.realpath(os.path.join(root, name))
 			if not tempFullPath.startswith(fullPath) and not logFullPath.startswith(fullPath):
-				shutil.rmtree(fullPath)
+				lib.rmtree(fullPath)
 			# Do not look into this path
 			if tempFullPath == fullPath or logFullPath == fullPath:
 				dirs.remove(name)
@@ -474,10 +573,13 @@ def update(args):
 	dependenciesDirectoryPath = os.path.join(TEMP_DIRECTORY_PATH, dependenciesDirectoryName)
 	dependenciesContentFiles = os.listdir(dependenciesDirectoryPath)
 	for fileName in dependenciesContentFiles:
+		# Probably useless but it gives a second guaranty that the files are properly deleted
+		if os.path.exists(os.path.join(DEPENDENCIES_PATH, fileName)):
+			lib.rmtree(os.path.join(DEPENDENCIES_PATH, fileName))
 		shutil.move(os.path.join(dependenciesDirectoryPath, fileName), DEPENDENCIES_PATH)
 
 	# Replace main source file
-	shutil.move(os.path.join(TEMP_DIRECTORY_PATH, executableName), EXECUTABLE_PATH)
+	shutil.move(os.path.join(TEMP_DIRECTORY_PATH, executableName), executableName)
 
 	# Read again current hash
 	gitRawHash = lib.shell(["git", "rev-parse", "HEAD"], cwd=TEMP_DIRECTORY_PATH, capture=True)
@@ -485,7 +587,7 @@ def update(args):
 
 	# Remove temporary directory
 	try:
-		shutil.rmtree(TEMP_DIRECTORY_PATH)
+		lib.rmtree(TEMP_DIRECTORY_PATH)
 	except Exception as e:
 		lib.warning("Could not delete %s, %s" % (TEMP_DIRECTORY_PATH, e))
 
@@ -525,6 +627,17 @@ class lib:
 		sys.stderr.write("[FATAL] %s\n" % (str(message)))
 		sys.stderr.flush()
 		sys.exit(1)
+
+	@staticmethod
+	def rmtree(path):
+		def handleRemoveReadonly(func, path, exc):
+			excvalue = exc[1]
+			if excvalue.errno == errno.EACCES:
+				os.chmod(path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO) # 0777
+				func(path)
+			else:
+				raise
+		shutil.rmtree(path, ignore_errors=False, onerror=handleRemoveReadonly)
 
 	"""
 	Execute a shell command in a specific directory.
@@ -589,6 +702,13 @@ class lib:
 		# Build the output list
 		return list(queue.queue) if isReturnStdout else []
 
+	"""
+	Must be called at the end of the program
+	"""
+	@staticmethod
+	def destroy():
+		pass
+
 # -----------------------------------------------------------------------------
 
 """
@@ -609,8 +729,11 @@ if __name__ == "__main__":
 	}
 
 	parser = argparse.ArgumentParser(description = "Application helper script.")
-	parser.add_argument("-c", "--config", action="store", dest="configPath", default=DEFAULT_CONFIG_FILE, help="Path of the build definition (default=%s)." % (DEFAULT_CONFIG_FILE))
+	parser.add_argument("-r", "--root", action="store", dest="rootPath", default=EXECUTABLE_DIRECTORY_PATH, help="Change the root path (default=%s)." % (EXECUTABLE_DIRECTORY_PATH))
+	parser.add_argument("-c", "--config", action="store", dest="configPath", default=DEFAULT_CONFIG_FILE, help="Relative path of the build definition from the root path (default=%s)." % (DEFAULT_CONFIG_FILE))
 	parser.add_argument("-v", "--version", action='version', version="%s hash: %s" % (os.path.basename(__file__), str(getCurrentHash())))
+	# Internal only, add a prefix to the logging
+	parser.add_argument("--dispatch", action="store", dest="dispatch", default=False, help=argparse.SUPPRESS)
 
 	subparsers = parser.add_subparsers(dest="command", help='List of available commands.')
 
@@ -662,3 +785,6 @@ if __name__ == "__main__":
 
 	# Execute the proper action
 	fct(args)
+
+	# Clean-up the library
+	lib.destroy()

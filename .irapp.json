@@ -1,8 +1,16 @@
 {
-	"types": ["python"],
+	"types": ["python", "jenkins"],
 	"assets": "./assets",
-	"tests": {
-		"python.unittest": ["tests/unit/testShell.py", "tests/endtoend/testCMake.py"]
+	"dependencies": {
+		"debian": ["cmake", "g++"]
 	},
-	"ignore": ["git.gitignore.irapp"]
+	"tests": {
+		"python.unittest": [
+			"tests/unit/testShell.py",
+			"tests/unit/testModules.py",
+			"tests/endtoend/testCMake.py",
+			"tests/endtoend/testDispatch.py"
+		]
+	},
+	"ignore": ["jenkins.irapp.update", "git.gitignore.irapp"]
 }

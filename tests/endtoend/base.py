@@ -34,6 +34,8 @@ class EndToEndTests(unittest.TestCase):
 		self.assertIn("succeed", self.app("update"))
 
 	def usePreset(self, name):
+		self.logTest("Using preset '%s' in '%s'" % (name, self.testDirPath))
+
 		# Use a specific preset
 		path = os.path.join(presetDirectory, name)
 		self.assertTrue(os.path.isdir(path))
@@ -48,12 +50,18 @@ class EndToEndTests(unittest.TestCase):
 
 	def tearDown(self):
 		# Remove the directory after the test
-		shutil.rmtree(self.testDirPath)
+		self.lib.rmtree(self.testDirPath)
+
+	def logTest(self, message):
+		sys.stdout.write("[TEST] %s\n" % (str(message)))
+		sys.stdout.flush()
 
 	"""
 	Execute commands on the app and return the output
 	"""
 	def app(self, *args):
+		self.logTest("Running app.py %s" % (str(" ".join(list(args)))))
+
 		process = subprocess.Popen([sys.executable, "./app.py"] + list(args), cwd=self.testDirPath, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 		stdout, stderr = process.communicate()
 

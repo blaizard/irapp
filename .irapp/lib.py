@@ -14,7 +14,8 @@ import json
 import shutil
 import imp
 import math
-
+import errno
+import stat
 try:
 	from queue import Queue
 except:
@@ -26,23 +27,25 @@ commands = imp.load_source('commands', os.path.join(os.path.dirname(__file__), '
 
 # ---- Logging methods --------------------------------------------------------
 
+logPrefix = ""
+
 """
 Print messages
 """
 def info(message):
-	sys.stdout.write("[INFO] %s\n" % (str(message)))
+	sys.stdout.write("%s[INFO] %s\n" % (str(logPrefix), str(message)))
 	sys.stdout.flush()
 
 def warning(message):
-	sys.stdout.write("[WARNING] %s\n" % (str(message)))
+	sys.stdout.write("%s[WARNING] %s\n" % (str(logPrefix), str(message)))
 	sys.stdout.flush()
 
 def error(message):
-	sys.stderr.write("[ERROR] %s\n" % (str(message)))
+	sys.stderr.write("%s[ERROR] %s\n" % (str(logPrefix), str(message)))
 	sys.stderr.flush()
 
 def fatal(message):
-	sys.stderr.write("[FATAL] %s\n" % (str(message)))
+	sys.stderr.write("%s[FATAL] %s\n" % (str(logPrefix), str(message)))
 	sys.stderr.flush()
 	sys.exit(1)
 
@@ -84,6 +87,39 @@ class UniqueId:
 def uniqueId():
 	UniqueId.counter += 1
 	return UniqueId.counter
+
+"""
+Delete a directory and all its content
+"""
+def rmtree(path):
+	# This is needed for Windows
+	def handleRemoveReadonly(func, path, exc):
+		excvalue = exc[1]
+		if excvalue.errno == errno.EACCES:
+			os.chmod(path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO) # 0777
+			func(path)
+		else:
+			raise
+	retryCounter = 3
+	while retryCounter:
+		shutil.rmtree(path, ignore_errors=True, onerror=handleRemoveReadonly)
+		if not os.path.exists(path):
+			break
+		retryCounter -= 1
+		# Wait for 1s, this is needed for Windows (probably for some cache to be flushed)
+		time.sleep(1)
+	if retryCounter == 0:
+		fatal("Unable to delete directory '%s'" % (str(path)))
+
+"""
+Extract the version number from the output received by a shell command
+"""
+def getVersion(output):
+	for line in output:
+		match = re.search(r'(\d+(?:\.\d+)+)', line)
+		if match:
+			return match.group(1)
+	return "unknown"
 
 """
 Deep merge 2 dictionaries
@@ -132,16 +168,16 @@ def configSanityCheck(config, user=False):
 
 		if key in config:
 			if not assertTypesInternal(config[key], typeList):
-				fatal("The configuration {... \"%s\": %s ...} is not of valid format, it should be of type %s; for example: {... \"%s\": %s ...}" % (
+				raise Exception("The configuration {... \"%s\": %s ...} is not of valid format, it should be of type %s; for example: {... \"%s\": %s ...}" % (
 						key, json.dumps(config[key]), "::".join([t.__name__ for t in typeList]), key, json.dumps(example)))
 
 	if not isinstance(config, dict):
-		fatal("Configuration must be a dictionary: %s" % (str(config)))
+		raise Exception("Configuration must be a dictionary: %s" % (str(config)))
 
 	if user:
 		for key in ["lib", "root", "pimpl"]:
 			if key in config:
-				fatal("The configuration key '%s' is protected and cannot be altered" % (key))
+				raise Exception("The configuration key '%s' is protected and cannot be altered" % (key))
 
 	assertTypes(config, "parallelism", [int], 4)
 	assertTypes(config, "types", [list, str], ["python", "cmake"])
@@ -151,6 +187,7 @@ def configSanityCheck(config, user=False):
 	assertTypes(config, "builds", [dict, dict], {"gcc-release": {"compiler": "gcc", "lint": True}})
 	assertTypes(config, "templates", [dict, dict, str], {"debian": {"run": "./%path%"}})
 	assertTypes(config, "ignore", [list, str], ["git.ignore.irapp"])
+	assertTypes(config, "dispatch", [list, str], ["./relative/path/to/project1"])
 
 """
 Return the specific command based on the attributes and the global configuration
@@ -158,10 +195,9 @@ Return the specific command based on the attributes and the global configuration
 def getCommand(config, commandType, typeIds, args):
 	# Build the description from the typeIds
 	desc = {}
+	desc.update(config)
 	for typeId in typeIds.split("."):
-		if typeId in config["pimpl"]:
-			desc.update(config["pimpl"][typeId].getCommandsTemplate())
-		elif typeId in config["templates"]:
+		if typeId in config["templates"]:
 			desc.update(config["templates"][typeId])
 
 	if commandType not in desc:
@@ -173,20 +209,41 @@ def getCommand(config, commandType, typeIds, args):
 	return Template(templateStr).process(desc, recursive=True, removeEmptyLines=False)
 
 """
-Return the path of the executable if availabl, None otherwise
+Return the path of the executable if available, None otherwise
 """
-def which(executable):
+def which(executable, cwd="."):
+	# If the path is relative, returns the full path
+	firstSep = executable.find(os.path.sep)
+	if firstSep > 0:
+		return os.path.normpath(os.path.join(cwd, executable))
+	elif firstSep == 0:
+		return executable
+
 	try:
-		path = shell(["which", executable], capture=True)
+		if sys.platform =='win32':
+			for root in os.environ['PATH'].split(os.pathsep):
+				for ext in [".exe", ".cmd", ""]:
+					executablePath = os.path.join(root, executable + ext)
+					if os.path.isfile(executablePath):
+						return executablePath
+		else:
+			return shell(["which", executable], capture=True)[0]
 	except:
-		return None
-	return path[0]
+		pass
+	return None
+
+"""
+To store the instance of process started with the non-blocking option
+"""
+runningProcess = []
 
 """
 Execute a shell command in a specific directory.
 If it fails, it will throw.
+@param blocking Tells if the process should block the execution. If not it will run in parallel and might block the ending of the caller
+                process if it ends.
 """
-def shell(command, cwd=".", capture=False, ignoreError=False, queue=None, signal=None, hideStdout=False, hideStderr=False):
+def shell(command, cwd=".", capture=False, ignoreError=False, queue=None, signal=None, hideStdout=False, hideStderr=False, blocking=True):
 
 	def enqueueOutput(out, queue, signal):
 		try:
@@ -197,13 +254,24 @@ def shell(command, cwd=".", capture=False, ignoreError=False, queue=None, signal
 		out.close()
 		signal.set()
 
-
 	stdout = open(os.devnull, 'w') if hideStdout else (subprocess.PIPE if capture or queue else None)
 	stderr = open(os.devnull, 'w') if hideStderr else (subprocess.STDOUT if capture or queue else None)
 
 	isReturnStdout = True if capture and not queue else False
 
+	# Workaround on Windows machine, the environment path is not searched to find the executable, hence
+	# we need to do this manually.
+	if sys.platform =='win32':
+		fullPath = which(command[0], cwd=cwd)
+		if fullPath:
+			command[0] = fullPath
+
 	proc = subprocess.Popen(command, cwd=cwd, shell=False, stdout=stdout, stderr=stderr)
+
+	# If non-blocking returns directly
+	if not blocking:
+		runningProcess.append(proc)
+		return
 
 	if not queue:
 		queue = Queue()
@@ -242,10 +310,8 @@ def shell(command, cwd=".", capture=False, ignoreError=False, queue=None, signal
 		errorMsgList.append("return.code=%s" % (str(proc.returncode)))
 
 	if len(errorMsgList):
-		message = "Failed to execute '%s' in '%s': %s" % (" ".join(command), str(cwd), ", ".join(errorMsgList))
-		if ignoreError:
-			warning(message)
-		else:
+		if not ignoreError:
+			message = "Failed to execute '%s' in '%s': %s" % (" ".join(command), str(cwd), ", ".join(errorMsgList))
 			raise Exception(message)
 
 	# Build the output list
@@ -414,6 +480,14 @@ def shellMulti(commandList, cwd=".", nbIterations=1, isAutoTimeout=True, verbose
 				error("Failure cause: %s" % (", ".join(errorList)))
 		raise Exception()
 
+"""
+Ensure that the processes previously started are destroyed
+"""
+def destroy():
+	# Wait until all non-blocking process previously started are done
+	for process in runningProcess:
+		process.wait()
+
 # ---- Log related methods ----------------------------------------------------
 
 # Hack
@@ -468,7 +542,7 @@ class LogFactory:
 			for file in os.listdir(self.logDirPath):
 				filePath = os.path.join(self.logDirPath, file)
 				if os.path.isdir(filePath) and file not in runningPidList:
-					shutil.rmtree(filePath)
+					rmtree(filePath)
 
 	@staticmethod
 	def getMetadata(*path):
@@ -489,7 +563,7 @@ class LogFactory:
 		# Create log directory entry and remove its content
 		curlogDirPath = os.path.join(self.logDirPath, str(pid))
 		if os.path.exists(curlogDirPath):
-			shutil.rmtree(curlogDirPath)
+			rmtree(curlogDirPath)
 		os.makedirs(curlogDirPath)
 
 		# Update the json file
@@ -532,7 +606,7 @@ class Template:
 		for k in key.split("."):
 			if k not in args:
 				fatal("Template value '%s' is not set." % (key))
-			args = args[k]
+			args = args[k]() if callable(args[k]) else args[k]
 
 		return args
 
@@ -694,34 +768,26 @@ class Module:
 
 	"""
 	Get the configuration value for this modules.
-	Start to look in the specific values, if not, look in the generic.
-	If no value is present, returns noneValue
+	The rule is, first look in to the specific values (aka: config["git"][...] for example)
+	if nothing is found, look in the global config (aka: config[...])
+	if nothing is found return the default value from the specific values if set, otherwise the default
 	"""
-	def getConfig(self, keyList=[], noneValue=None, onlySpecific=False):
+	def getConfig(self, keyList=[], default=None, onlySpecific=False):
 		def getValue(config):
 			for key in keyList:
 				if key not in config:
 					return None
 				config = config[key]
 			return config
-		# Look for the specific option first
-		specificValue = getValue(self.config[self.name()]) if self.name() in self.config else None
-		# Then the generic
-		genericValue = getValue(self.__class__.config()) if onlySpecific else getValue(self.config)
-		# Merge the values
-		if isinstance(genericValue, dict) and isinstance(specificValue, dict):
-			return deepMerge(genericValue, specificValue)
-		if specificValue != None:
-			return specificValue
-		if genericValue != None:
-			return genericValue
-		return noneValue
-
-	"""
-	Check if a configruation is available
-	"""
-	def isConfig(self, keyList=[], onlySpecific=False):
-		return False if self.getConfig(keyList, onlySpecific=onlySpecific) == None else True
+		value = getValue(self.config[self.name()]) if self.name() in self.config else None
+		# If there is no specific value, look for the global value
+		if value == None and not onlySpecific:
+			value = getValue(self.config)
+		# Return the value if there is one
+		if value:
+			return value
+		# If the default value is set, return it, otherwise return the default from the specific config
+		return getValue(self.__class__.config()) if default == None else default
 
 	"""
 	Asses if a confguration is ignored or not
@@ -797,7 +863,7 @@ class Module:
 	"""
 	def setDefaultBuildType(self, buildType, save=True):
 		# Check if the build type is registered in the config of this module
-		if not self.isConfig(["builds", buildType], onlySpecific=True):
+		if not self.getConfig(["builds", buildType], default=False, onlySpecific=True):
 			return False
 
 		# If build type is different than previous one already registered, then cleanup
@@ -826,22 +892,24 @@ class Module:
 		if os.path.isfile(currentBuildTypePath):
 			with open(currentBuildTypePath, "r") as f:
 				buildType = f.read()
-				if buildType in self.config["builds"]:
+				if self.getConfig(["builds", buildType], default=False, onlySpecific=True):
 					self.defaultBuildType = buildType
 					return buildType
 
 		# If none, use the first config
-		if not onlyFromConfig:
-			for name in self.config["builds"]:
-				return name
+		if not onlyFromConfig and "builds" in self.__class__.config():
+			for name in self.getConfig(["builds"], default={}, onlySpecific=True):
+				if self.getConfig(["builds", name, "default"], default=False, onlySpecific=True):
+					return name
 
 		return None
 
 	"""
-	Command invocation template
+	Return the default build
 	"""
-	def getCommandsTemplate(self):
-		return {}
+	def getDefaultBuild(self):
+		buildType = self.getDefaultBuildType()
+		return self.getConfig(["builds", buildType], default={}, onlySpecific=True)
 
 	"""
 	Runs the initialization of the module.

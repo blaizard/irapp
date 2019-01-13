@@ -5,11 +5,6 @@ from .. import lib
 import os
 
 class Jenkins(lib.Module):
-
-	@staticmethod
-	def check(config):
-		return True
-
 	@staticmethod
 	def config():
 		return {
@@ -18,7 +13,6 @@ class Jenkins(lib.Module):
 			"dependencies": {
 				"debian": ["valgrind"]
 			},
-			"tests": {},
 			"templates": {
 				"debian": {
 					"run": "./%path%"
@@ -43,9 +37,9 @@ class Jenkins(lib.Module):
 	"""
 	Helper function to modify and publish the Jenkinsfile
 	"""
-	def loadAndPublishJenkinsfile(self, fileName, config):
+	def loadAndPublishJenkinsfile(self, config):
 		# Create the Jenkinsfile
-		with open(self.getAssetPath("jenkinsfile", fileName), "r") as f:
+		with open(self.getAssetPath("Jenkinsfile"), "r") as f:
 			jenkinsfileStr = f.read()
 
 		jenkinsfileTemplate = lib.Template(jenkinsfileStr)
@@ -54,58 +48,26 @@ class Jenkins(lib.Module):
 		# Save the Jenkins file
 		return self.publishAssetTo(jenkinsfileStr, self.config["root"], "Jenkinsfile")
 
-	"""
-	Initialization for C++ projects
-	"""
-	def initCpp(self):
-		# Create the dockerfile image
-		dockerfilePath = self.loadAndPublishDockerfile("c++.linux.dockerfile", self.config["dependencies"])
-
-		# Copy the valgrind supp file
-		valgrindSuppPath = self.copyAsset("valgrind.supp")
-
-		# Update the buildConfigs with defautl values
-		updatedBuildConfigs = {}
-		for name, options in self.config["buildConfigs"].items():
-			updatedBuildConfigs[name] = {
-				"valgrind": False,
-				"tests": False,
-				"coverage": False
-			}
-			if options["default"]:
-				updatedBuildConfigs[name]["valgrind"] = True
-			if options["coverage"]:
-				updatedBuildConfigs[name]["coverage"] = True
-			if not options["lint"]:
-				updatedBuildConfigs[name]["tests"] = True
-			updatedBuildConfigs[name].update(options)
-
-		# Create the Jenkinsfile
-		self.loadAndPublishJenkinsfile("c++.Jenkinsfile", {
-			"dockerfilePath": dockerfilePath,
-			"staticAnalyzer": self.config["staticAnalyzer"],
-			"staticAnalyzerIgnore": self.config["staticAnalyzerIgnore"],
-			"buildConfigs": updatedBuildConfigs,
-			"tests": self.config["tests"],
-			"valgrindSuppPath": valgrindSuppPath,
-			"coverageDir": os.path.join(self.config["buildDir"], "coverage")
-		})
-
 	def init(self):
 
 		# Generate the configs
 		builds = {}
 		for moduleId, module in self.config["pimpl"].items():
-			for buildName, options in module.getConfig(["builds"], noneValue={}, onlySpecific=True).items():
-				builds["%s:%s" % (moduleId, buildName)] = dict(options, configs={moduleId: buildName})
+			for buildName, options in module.getConfig(["builds"], default={}, onlySpecific=True).items():
+				builds["%s.%s" % (moduleId, buildName)] = dict(options, configs={moduleId: buildName})
 		builds = builds or {"": {}}
+
+		# Generate the dependencies
+		dependencies = self.config["dependencies"]
+		for moduleId, module in self.config["pimpl"].items():
+			dependencies = lib.deepMerge(dependencies, module.getConfig(["dependencies"], default={}, onlySpecific=True))
 
 		# Copy the valgrind suppression file
 		valgrindSuppPath = self.copyAsset("valgrind.supp")
 
 		# Generate the various dockerfiles
 		configs = {}
-		for platform, deps in self.config["dependencies"].items():
+		for platform, deps in dependencies.items():
 			# Remove duplicates and sort the list to ensure the order stays the same after each builds
 			deps = list(set(deps))
 			deps.sort()
@@ -151,7 +113,7 @@ class Jenkins(lib.Module):
 						for path in testList:
 							for name in ["junit", "test", "run"]:
 								execTest = lib.getCommand(self.config, name, "%s.%s" % (platform, typeIds), {
-										"report": "%s.%s_%i_%s.report" % (platform, buildName.replace(":", "."), lib.uniqueId(), name),
+										"report": "%s.%s_%i_%s.report" % (platform, buildName, lib.uniqueId(), name),
 										"path": path})
 								if execTest:
 									if name == "junit":
@@ -161,4 +123,7 @@ class Jenkins(lib.Module):
 
 				configs[platform]["builds"][buildName] = updatedOptions
 
-		self.loadAndPublishJenkinsfile("Jenkinsfile", {"configs": configs})
+		self.loadAndPublishJenkinsfile({
+			"configs": configs,
+			"irapp-update": not self.isIgnore("irapp", "update")
+		})

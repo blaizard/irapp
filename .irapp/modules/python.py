@@ -18,11 +18,10 @@ class Python(lib.Module):
 			},
 			"dependencies": {
 				"debian": ["python2.7", "python3"]
+			},
+			"templates": {
+				"python": {
+					"run": "%python.build.executable% %path%"
+				}
 			}
-		}
-
-	def getCommandsTemplate(self):
-		buildType = self.getDefaultBuildType()
-		return {
-			"run": self.getConfig(["builds", buildType, "executable"], "python") + " %path%"
 		}

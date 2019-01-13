@@ -1,0 +1,6 @@
+{
+	"types": ["python"],
+	"tests": {
+		"python": ["main.py"]
+	}
+}

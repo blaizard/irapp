@@ -4,7 +4,7 @@
 import base
 import unittest
 
-class TestShell(base.EndToEndTests):
+class TestCMake(base.EndToEndTests):
 
 	def testSimple(self):
 		self.usePreset("cmake")

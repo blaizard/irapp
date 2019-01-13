@@ -41,10 +41,36 @@ class Git(lib.Module):
 				"*.gcno",
 				".lcovrc"]
 
-	def init(self):
+	@staticmethod
+	def gitignoreNode():
+		return ["node_modules/",
+				".eslintcache"
+				".nuxt"]
 
-		# ---- Update gitmodules ----------------------------------------------
+	# ---- Update Credential Helper -------------------------------------------
 
+	"""
+	This will save your password setting for the next X hours or use your machine
+	credential store
+	"""
+	def initCredential(self):
+
+		# Cleanup the credential
+		lib.shell(["git", "config", "--local", "--remove-section", "credential"], cwd=self.config["root"], ignoreError=True, hideStdout=True, hideStderr=True)
+
+		if self.config["platform"] == "windows":
+			lib.info("Using 'manager' to store Git credentials")
+			lib.shell(["git", "config", "--local", "credential.helper", "manager"])
+		elif self.config["platform"] == "macos":
+			lib.info("Using 'keychain' to store Git credentials")
+			lib.shell(["git", "config", "--local", "credential.helper", "osxkeychain"])
+		else:
+			lib.info("Using cache to store Git credentials (24h)")
+			lib.shell(["git", "config", "--local", "credential.helper", "cache --timeout=86400"])
+
+	# ---- Update gitmodules ----------------------------------------------
+
+	def initGitmodule(self):
 		# Updating gitmodule repos if any
 		hasGitmodules = False
 		for root, dirs, files in os.walk(self.config["root"]):
@@ -79,8 +105,9 @@ class Git(lib.Module):
 			lib.info("Updating git submodules")
 			lib.shell(["git", "submodule", "update", "--init", "--recursive"], cwd=self.config["root"])
 
-		# ---- Update .gitignore ----------------------------------------------
+	# ---- Update .gitignore ----------------------------------------------
 
+	def initGitignore(self):
 		lib.info("Updating .gitignore")
 
 		gitIgnoreStr = ""
@@ -111,6 +138,11 @@ class Git(lib.Module):
 				"display": "C++",
 				"types": ["cmake"],
 				"patternList": Git.gitignoreCpp()
+			},
+			"node": {
+				"display": "NodeJs",
+				"types": ["node"],
+				"patternList": Git.gitignoreNode()
 			}
 		}
 		# Delete previous insertions by irapp
@@ -137,3 +169,10 @@ class Git(lib.Module):
 		# Write .gitignore
 		with open(os.path.join(self.config["root"], ".gitignore"),  "w") as f:
 			f.write("\n".join(gitIgnoreList))
+
+
+	def init(self):
+
+		self.initGitmodule()
+		self.initGitignore()
+		self.initCredential()

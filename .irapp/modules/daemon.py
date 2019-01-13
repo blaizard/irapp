@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import errno
+import timeit
 
 irappDirectoryPath = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, irappDirectoryPath)
@@ -21,7 +22,7 @@ class Daemon(lib.Module):
 
 	@staticmethod
 	def check(config):
-		return (platform.system() != "Windows")
+		return True
 
 	"""
 	Return the current process list and their PID
@@ -29,10 +30,25 @@ class Daemon(lib.Module):
 	@staticmethod
 	def getProcesses():
 		processes = {}
-		if platform.system() == "Windows":
+		if sys.platform == "win32":
 			#output = lib.shell(["tasklist"], capture=True)
-			output = lib.shell(["wmic", "process", "get", "processid,commandline"], capture=True)
-			# to complete
+			output = lib.shell(["wmic", "process", "get", "processid,parentprocessid,commandline", "/format:csv"], capture=True)
+			for line in output[2:]:
+				split = line.split(",")
+				if len(split) > 2:
+					command = (",".join(split[1:-2])).strip()
+					ppid = split[-2]
+					pid = split[-1]
+					if command:
+						try:
+							processes[int(pid)] = {
+								"ppid": int(ppid),
+								"command": command,
+								"cpu": 0,
+								"memory": 0
+							}
+						except:
+							pass
 		else:
 			output = lib.shell(["ps", "-eo", "pid,ppid,rss,%cpu,command"], capture=True)
 			for line in output[1:]:
@@ -52,26 +68,31 @@ class Daemon(lib.Module):
 		# Check if the same process is running
 		runningParentPis = {}
 		processes = Daemon.getProcesses()
+
 		# Search for the parent process (that are identifiable by the regexpr)
 		for pid, process in processes.items():
 			match = re.search(cmdRegexpr, process["command"])
 			if match:
-				runningParentPis[pid] = match.group(1)
+				# Format: { pid: {id: <appId>, ...} }
+				runningParentPis[pid] = dict(process, id=match.group(1))
+
 		# Look for the child of these parent processes
 		runningProcesses = {}
-		for pid, process in processes.items():
-			if process["ppid"] in runningParentPis:
-				runningProcesses[pid] = dict(process, id=runningParentPis[process["ppid"]])
+		for ppid, pprocess in runningParentPis.items():
+			matches = {pid: dict(process, id=pprocess["id"]) for pid, process in processes.items() if process["ppid"] == ppid}
+			if not matches:
+				matches = {ppid: dict(pprocess, ppid=None)}
+			runningProcesses.update(matches)
+
 		return runningProcesses
 
 	@staticmethod
-	def isProcessRunning(pid):
-		try:
-			os.kill(pid, 0)
-		except OSError as err:
-			if err.errno == errno.ESRCH:
-				return False
-		return True
+	def killProcess(pid):
+		if sys.platform == "win32":
+			os.system("taskkill /f /pid %i" % (pid))
+		else:
+			os.kill(pid, signal.SIGKILL)
+		os.waitpid(pid)
 
 	def stop(self, appId=None):
 		# Get the list of running process
@@ -80,18 +101,15 @@ class Daemon(lib.Module):
 		# Delete the running processes if any
 		for pid, process in runningProcesses.items():
 			lib.info("Stopping daemon '%s' with pid %i" % (process["id"], pid))
-			# Stop the parent process
-			try:
-				os.kill(process["ppid"], signal.SIGKILL)
-				while Daemon.isProcessRunning(process["ppid"]):
-					time.sleep(0.1)
-			except:
-				pass # Ignore errors as the process might be gone by then
+			# Stop the parent process for to make sure ti will not restart the child process
+			if process["ppid"]:
+				try:
+					Daemon.killProcess(process["ppid"])
+				except:
+					pass # Ignore errors as the process might be gone by then
 			# Stop the process itself
 			try:
-				os.kill(pid, signal.SIGKILL)
-				while Daemon.isProcessRunning(pid):
-					time.sleep(0.1)
+				Daemon.killProcess(pid)
 			except:
 				pass # Ignore errors as the process might be gone by then
 
@@ -103,12 +121,20 @@ class Daemon(lib.Module):
 		# Stop previous instances if any
 		self.stop(appId)
 
+		# Workaround on Windows machine, the environment path is not searched to find the executable, hence
+		# we need to do this manually.
+		if sys.platform =='win32':
+			fullPath = lib.which(commandList[0], cwd=context["cwd"])
+			if fullPath:
+				commandList[0] = fullPath
+
 		# Start a subprocess with the executabel information
 		process = subprocess.Popen([sys.executable, __file__, appId, self.config["log"]] + commandList, stdin=None, stdout=None, stderr=None, shell=False, cwd=context["cwd"])
 
-		# 1s timeout before checking the status
-		time.sleep(1)
-		if process.poll() != None:
+		# 2s timeout before checking the status (one is too low)
+		# This is to gfive enough time for the process to start
+		time.sleep(2)
+		if process.poll() != None and process.returncode != 0:
 			raise Exception("Unable to start daemon '%s' in '%s'" % (" ".join(commandList), context["cwd"]))
 
 		lib.info("Started daemon '%s'" % (appId))
@@ -118,49 +144,76 @@ Entry point fo the script
 """
 if __name__ == "__main__":
 
-	def stdLogger(stream, log):
-		for line in iter(stream.readline, b''):
-			log.add(line)
+	def stdLogger(process, stream, log):
+		while True:
+			line = stream.readline()
+			if line:
+				log.add(line)
+			elif process.poll() is not None:
+				break
 
-	# Ignore signal SIGHUP to act like nohup/screen
-	signal.signal(signal.SIGHUP, signal.SIG_IGN)
+	if sys.platform != "win32":
+		# Ignore signal SIGHUP to act like nohup/screen (on unix machine)
+		signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
 	appId = sys.argv[1]
 	logDir =  sys.argv[2]
-	commandList =  sys.argv[3:]
+	commandList = sys.argv[3:]
 
 	restartCounter = 0
 	restartFailureCounter = 0
 	restart = True
 
+	# Failure that opens with the next X seconds of the process being open
+	# If they happen too often the process will be stopped
+	rapidConsequentFailureCounter = 0
+
 	factory = lib.LogFactory(logDir, appId, Daemon.getRunningProcesses(appId).keys())
 
-	while restart:
+	# The out and err streams
+	logStdout = logStderr = None
 
-		# Spawn the process
-		try:
-			process = subprocess.Popen(commandList, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, universal_newlines=True)
-			restartFailureCounter = 0
-		except BaseException as e:
-			restartFailureCounter += 1
-			if restartCounter == 0 or restartFailureCounter >= 5:
-				sys.exit(1)
-			logStderr.add("Could not start '%s': %s, restarting in 5s" % (" ".join(commandList), str(e)))
-			time.sleep(5)
-			continue
+	try:
+		while restart:
 
-		# Create the rotating loggers
-		logStdout, logStderr = factory.createLogs(process.pid)
+			# Spawn the process
+			try:
+				process = subprocess.Popen(commandList, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, universal_newlines=True)
+				restartFailureCounter = 0
+			except BaseException as e:
+				restartFailureCounter += 1
+				if restartCounter == 0 or restartFailureCounter >= 5:
+					raise e
+				logStderr.add("Could not start '%s': %s, restarting in 5s" % (" ".join(commandList), str(e)))
+				time.sleep(5)
+				continue
 
-		# Log Stderr
-		thread = threading.Thread(target=stdLogger, args=(process.stderr, logStderr))
-		thread.start()
+			timeStart = timeit.default_timer()
 
-		# Log Stdout
-		stdLogger(process.stdout, logStdout)
+			# Create the rotating loggers
+			logStdout, logStderr = factory.createLogs(process.pid)
 
-		# Restart if the process failed
-		restart = (process.wait() != 0)
-		restartCounter += 1
+			# Log Stderr
+			thread = threading.Thread(target=stdLogger, args=(process, process.stderr, logStderr))
+			thread.start()
+
+			# Log Stdout
+			stdLogger(process, process.stdout, logStdout)
+
+			# Restart if the process failed
+			restart = (process.wait() != 0)
+			# If it fails within the first 60s
+			if restart and (timeit.default_timer() - timeStart) < 60:
+				rapidConsequentFailureCounter += 1
+				if rapidConsequentFailureCounter > 3:
+					raise Exception("Too many (>%i) consequent rapid (<%is) failures detected, aborting." % (3, 60))
+			else:
+				rapidConsequentFailureCounter = 0
+
+			restartCounter += 1
+	except BaseException as e:
+		if logStderr:
+			logStderr.add(str(e))
+		raise e
 
 	sys.exit(0)

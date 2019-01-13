@@ -7,9 +7,10 @@ from .modules import git
 from .modules import default
 from .modules import jenkins
 from .modules import daemon
+from .modules import node
 
 # Modules sorted by order
-moduleList = [git.Git, default.Default, cmake.CMake, python.Python, jenkins.Jenkins, daemon.Daemon]
+moduleList = [git.Git, default.Default, cmake.CMake, node.Node, python.Python, jenkins.Jenkins, daemon.Daemon]
 
 def loadModules():
 	return {module.name(): module for module in moduleList}

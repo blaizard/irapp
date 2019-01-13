@@ -14,11 +14,11 @@ class Default(lib.Module):
 	@staticmethod
 	def config():
 		return {
-			"default": {}
+			"files": {}
 		}
 
 	def init(self):
-		for file, defaultFile in self.config["default"].items():
+		for file, defaultFile in self.getConfig(["files"]).items():
 			if not os.path.isfile(os.path.join(self.config["root"], file)):
 				lib.info("Copying default file %s to %s" % (defaultFile, file))
 				shutil.copy(os.path.join(self.config["root"], defaultFile), os.path.join(self.config["root"], file))

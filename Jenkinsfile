@@ -26,7 +26,10 @@ pipeline {
 				{
 					stage('Setup debian Completed')
 					{
-						echo 'Setup debian Completed'
+						steps
+						{
+							echo 'Setup debian Completed'
+						}
 					}
 				}
 			}
@@ -37,7 +40,7 @@ pipeline {
 			{
 				parallel
 				{
-						stage('debian.python:v3')
+						stage('debian.python.v2.7')
 						{
 							agent
 							{
@@ -48,55 +51,19 @@ pipeline {
 							}
 							stages
 							{
-								stage('Build debian.python:v3')
+								stage('Build debian.python.v2.7')
 								{
 									steps
 									{
-										sh './app.py update'
-										sh './app.py init'
-										sh './app.py build  -c python:v3 '
-									}
-								}
-									stage('Test debian.python:v3')
-									{
-										steps
-										{
-												sh "./app.py run  --cmd 'python3 tests/unit/testShell.py'  --cmd 'python3 tests/endtoend/testCMake.py'  -j0"
-										}
-									}
-							}
-							post
-							{
-								always
-								{
-								}
-							}
-						}
-						stage('debian.python:v2.7')
-						{
-							agent
-							{
-								dockerfile
-								{
-									filename 'assets/debian.dockerfile'
-								}
-							}
-							stages
-							{
-								stage('Build debian.python:v2.7')
-								{
-									steps
-									{
-										sh './app.py update'
 										sh './app.py init'
 										sh './app.py build  -c python:v2.7 '
 									}
 								}
-									stage('Test debian.python:v2.7')
+									stage('Test debian.python.v2.7')
 									{
 										steps
 										{
-												sh "./app.py run  --cmd 'python2.7 tests/unit/testShell.py'  --cmd 'python2.7 tests/endtoend/testCMake.py'  -j0"
+												sh "./app.py run  --cmd 'python2.7 tests/unit/testShell.py'  --cmd 'python2.7 tests/unit/testModules.py'  --cmd 'python2.7 tests/endtoend/testCMake.py'  --cmd 'python2.7 tests/endtoend/testDispatch.py'  -j0"
 										}
 									}
 							}
@@ -104,6 +71,44 @@ pipeline {
 							{
 								always
 								{
+									// This is needed to avoid an error if there are no steps in this block
+									echo 'Post platform debian.python.v2.7'
+								}
+							}
+						}
+						stage('debian.python.v3')
+						{
+							agent
+							{
+								dockerfile
+								{
+									filename 'assets/debian.dockerfile'
+								}
+							}
+							stages
+							{
+								stage('Build debian.python.v3')
+								{
+									steps
+									{
+										sh './app.py init'
+										sh './app.py build  -c python:v3 '
+									}
+								}
+									stage('Test debian.python.v3')
+									{
+										steps
+										{
+												sh "./app.py run  --cmd 'python3 tests/unit/testShell.py'  --cmd 'python3 tests/unit/testModules.py'  --cmd 'python3 tests/endtoend/testCMake.py'  --cmd 'python3 tests/endtoend/testDispatch.py'  -j0"
+										}
+									}
+							}
+							post
+							{
+								always
+								{
+									// This is needed to avoid an error if there are no steps in this block
+									echo 'Post platform debian.python.v3'
 								}
 							}
 						}
