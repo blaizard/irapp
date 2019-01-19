@@ -17,8 +17,18 @@ class Default(lib.Module):
 			"files": {}
 		}
 
+	@staticmethod
+	def configDescriptor():
+		return {
+			"files": {
+				"type": [dict, str],
+				"example": {"config.hpp": "config.example.hpp"},
+				"help": "Copy a default file if it does not exists."
+			}
+		}
+
 	def init(self):
 		for file, defaultFile in self.getConfig(["files"]).items():
-			if not os.path.isfile(os.path.join(self.config["root"], file)):
+			if not os.path.isfile(lib.path(self.config["root"], file)):
 				lib.info("Copying default file %s to %s" % (defaultFile, file))
-				shutil.copy(os.path.join(self.config["root"], defaultFile), os.path.join(self.config["root"], file))
+				shutil.copy(lib.path(self.config["root"], defaultFile), lib.path(self.config["root"], file))

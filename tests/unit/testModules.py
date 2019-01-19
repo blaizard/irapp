@@ -8,7 +8,7 @@ class TestModules(base.UnitTests):
 
 	def testSanityCheck(self):
 		for moduleId, module in self.modules.items():
-			self.lib.configSanityCheck(module.config())
+			self.lib.configSanityCheck({moduleId: module.config()}, modules={moduleId: module})
 
 if __name__ == '__main__':
 	base.UnitTests.main()

@@ -13,8 +13,8 @@ module.exports = {
 		}
 	},
 	"rules": {
-		"indent": ["error", "tab"],
 		"quotes": ["error", "double"],
-		"semi": ["error", "always"]
+		"semi": ["error", "always"],
+		"indent": ["error", "tab", { "ObjectExpression": "first" }]
 	}
 };

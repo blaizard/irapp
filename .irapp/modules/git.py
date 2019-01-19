@@ -8,7 +8,7 @@ class Git(lib.Module):
 
 	@staticmethod
 	def check(config):
-		return os.path.isdir(os.path.join(config["root"], ".git"))
+		return os.path.isdir(lib.path(config["root"], ".git"))
 
 	# ---- gitignore rules ----------------------------------------------------
 
@@ -44,7 +44,7 @@ class Git(lib.Module):
 	@staticmethod
 	def gitignoreNode():
 		return ["node_modules/",
-				".eslintcache"
+				".eslintcache",
 				".nuxt"]
 
 	# ---- Update Credential Helper -------------------------------------------
@@ -82,8 +82,8 @@ class Git(lib.Module):
 			for file in files:
 				if file == ".gitmodules":
 					hasGitmodules = True
-					gitmodulesPath = os.path.join(root, file)
-					gitDirPath = os.path.join(root, ".git")
+					gitmodulesPath = lib.path(root, file)
+					gitDirPath = lib.path(root, ".git")
 
 					# If no git directory is present, create it
 					if not os.path.isdir(gitDirPath):
@@ -111,9 +111,9 @@ class Git(lib.Module):
 		lib.info("Updating .gitignore")
 
 		gitIgnoreStr = ""
-		gitIgnorePath = os.path.join(self.config["root"], ".gitignore")
+		gitIgnorePath = lib.path(self.config["root"], ".gitignore")
 		if os.path.isfile(gitIgnorePath):
-			with open(os.path.join(self.config["root"], ".gitignore"),  "r") as f:
+			with open(lib.path(self.config["root"], ".gitignore"),  "r") as f:
 				gitIgnoreStr = f.read()
 		gitIgnoreList = [line.strip() for line in gitIgnoreStr.split("\n")]
 
@@ -167,7 +167,7 @@ class Git(lib.Module):
 				gitIgnoreList += ([""] if len(gitIgnoreList) and gitIgnoreList[-1] else []) + ["# %s" % (config["display"])] + config["patternList"]
 
 		# Write .gitignore
-		with open(os.path.join(self.config["root"], ".gitignore"),  "w") as f:
+		with open(lib.path(self.config["root"], ".gitignore"),  "w") as f:
 			f.write("\n".join(gitIgnoreList))
 
 

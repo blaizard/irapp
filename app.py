@@ -4,6 +4,7 @@
 import json
 import sys
 import os
+import re
 import platform
 import imp
 import subprocess
@@ -119,9 +120,10 @@ def readConfig(args, verbose=True, dispatch=False, forceDispatchResults=False, f
 		with f:
 			try:
 				configUser = json.load(f)
-				lib.configSanityCheck(configUser, user=True)
+				lib.configSanityCheck(configUser, user=True, modules=modules)
 				config.update(configUser)
 			except Exception as e:
+				lib.configPrintHelp(user=True, modules=modules)
 				lib.fatal("Could not parse configuration file '%s'; %s" % (str(args.configPath), str(e)))
 	except IOError:
 		if verbose:
@@ -141,9 +143,9 @@ def readConfig(args, verbose=True, dispatch=False, forceDispatchResults=False, f
 
 	# Resolve all path and make them absolute, plus create the directories if it does not exists
 	for key in ["assets", "log", "artifacts"]:
-		config[key] = os.path.abspath(config[key])
+		config[key] = lib.path(config["root"], config[key])
 		if not os.path.exists(config[key]):
-			os.makedirs(config[key])
+			lib.mkdir(config[key])
 
 	# Map and remove unsupported modules
 	typeList = []
@@ -177,12 +179,20 @@ def readConfig(args, verbose=True, dispatch=False, forceDispatchResults=False, f
 		for key in keyList:
 			lastNode = node
 			node = lastNode.setdefault(key, {})
-			if isinstance(node, bool):
+			if node == True:
 				break
 		lastNode[key] = True
 
 	# Have a specific path per module (specific to this module)
 	# ex: git.[...]
+	def applyIgnore(ignoreDict, config):
+		for keyPattern in ignoreDict:
+			for configKey in [key for key in config.keys() if re.match(keyPattern.replace("*", ".*"), key)]:
+				if ignoreDict[keyPattern] == True:
+					del config[configKey]
+				else:
+					applyIgnore(ignoreDict[keyPattern], config[configKey])
+	applyIgnore(config["ignoreDict"], config)
 
 	# If some commands need to be dispatched, do it now
 	if dispatch and len(config["dispatch"]):
@@ -335,26 +345,91 @@ def info(args):
 	printApps = True if printAll or args.apps else False
 	printModules = True if printAll else False
 
+	"""
+	This function prints a formated table
+	"""
+	def printTable(headerList, rowList, indent=0):
+		# Calculate teh cell lengths
+		cells = {header["key"]: [len(header["name"]), False] for header in headerList}
+		for build in rowList:
+			for header in headerList:
+				if header["key"] in build:
+					build[header["key"]] = str(header["formater"](build[header["key"]])) if "formater" in header else str(build[header["key"]])
+					if build[header["key"]] != "":
+						cells[header["key"]] = [max(cells[header["key"]][0], len(build[header["key"]])), True]
+		# Print the header
+		lib.info("%*s%s" % (indent, "", " ".join(["%-*s " % (cells[header["key"]][0], header["name"]) for header in headerList if cells[header["key"]][1]])))
+		# Print the table
+		for build in rowList:
+			lib.info("%*s%s" % (indent, "", " ".join(["%-*s " % (cells[header["key"]][0], str(build[header["key"]]) if header["key"] in build else "") for header in headerList if cells[header["key"]][1]])))
+
+	"""
+	Special cell formaters
+	"""
+	def formaterBool(value):
+		return "x" if value else ""
+	def formaterMemory(memBytes):
+		if not memBytes and memBytes != 0:
+			return "-"
+		unitIndex = 0
+		unitList = ["B", "kB", "MB", "GB", "TB"]
+		while memBytes > 768:
+			unitIndex += 1
+			memBytes /= 1024
+		return "%.1f%s" % (memBytes, unitList[unitIndex])
+	def formaterTime(timeS):
+		if not timeS and timeS != 0:
+			return "-"
+		strList = []
+		for check in [[3600 * 24, " day", " days"], [3600, "h", "h"], [60, "m", "m"], [1, "s", "s"]]:
+			if timeS >= check[0]:
+				unit = int(timeS / check[0])
+				strList.append("%i%s" % (unit, check[1] if unit > 1 else check[2]))
+				timeS -= unit * check[0]
+		return " ".join(strList[:2]) or "0s"
+
 	if printAll:
 		info["hash"] = str(getCurrentHash())
 		if verbose:
 			lib.info("Hash: %s" % (info["hash"]))
 
 	if printModules:
-		buildList = []
+		info["builds"] = {}
+		info["targets"] = []
 		for moduleId in config["types"]:
-			buildList += ["%s:%s" % (moduleId, build) for build in config["pimpl"][moduleId].getConfig(["builds"], default={}, onlySpecific=True).keys()]
+			# Merge the specific build info
 			info[moduleId] = config["pimpl"][moduleId].info(verbose)
+			# ---- builds -----------------------------------------------------
+			moduleBuilds = info[moduleId]["builds"] if "builds" in info[moduleId] else config["pimpl"][moduleId].getConfig(["builds"], default={}, onlySpecific=True)
+			# Update default attribute
+			for buildType, build in moduleBuilds.items():
+				build["default"] = True if config["pimpl"][moduleId].getDefaultBuildType() == buildType else False
+			info["builds"].update({"%s:%s" % (moduleId, key) : build for key, build in moduleBuilds.items()})
+			# ---- targets ----------------------------------------------------
+			info["targets"] = list(set(info["targets"] + (info[moduleId]["targets"] if "targets" in info[moduleId] else [])))
+
 		# Merge the dispatched layers
 		for key, dispatch in config["dispatchResults"].items():
-			if "buildList" in dispatch:
-				buildList += dispatch["buildList"]
-		# Cleanup doubles
-		buildList = list(set(buildList))
-		buildList.sort()
-		if verbose and buildList:
-			lib.info("Build configurations: %s" % (", ".join(buildList)))
-		info["buildList"] = buildList
+			if "builds" in dispatch:
+				info["builds"].update(dispatch["builds"])
+				info["targets"] = list(set(info["targets"] + dispatch["targets"]))
+
+		# Print the list
+		if verbose:
+			if info["builds"]:
+				lib.info("Available build configuration(s):")
+				buildList = [dict(value, id=key) for key, value in info["builds"].items()]
+				buildList.sort(key=lambda config: config["id"])
+				printTable([
+						{"key": "default", "name": "", "formater": formaterBool},
+						{"key": "id", "name": "Name"},
+						{"key": "lint", "name": "Lint", "formater": formaterBool},
+						{"key": "coverage", "name": "Cov.", "formater": formaterBool},
+						{"key": "compiler", "name": "Compiler"},
+						{"key": "type", "name": "Type"},
+						{"key": "path", "name": "Path"}], buildList)
+			if info["targets"]:
+				lib.info("Available build target(s): %s" % (", ".join(info["targets"])))
 
 	if printApps:
 		info["statusList"] = []
@@ -368,38 +443,16 @@ def info(args):
 
 		# Print the status list if any
 		if verbose and len(info["statusList"]):
-			def memoryToStr(memBytes):
-				unitIndex = 0
-				unitList = ["B", "kB", "MB", "GB", "TB"]
-				while memBytes > 768:
-					unitIndex += 1
-					memBytes /= 1024
-				return "%.1f%s" % (memBytes, unitList[unitIndex])
-			def uptimeToStr(timeS):
-				strList = []
-				for check in [[3600 * 24, " day", " days"], [3600, "h", "h"], [60, "m", "m"], [1, "s", "s"]]:
-					if timeS >= check[0]:
-						unit = int(timeS / check[0])
-						strList.append("%i%s" % (unit, check[1] if unit > 1 else check[2]))
-						timeS -= unit * check[0]
-				return " ".join(strList[:2]) or "0s"
-
-			formatTemplateStr = "%15s%10s%10s%10s%10s%10s%10s %s"
-			lib.info("Running applications:")
-			lib.info(formatTemplateStr % (
-				"Name", "Type", "PID", "Uptime", "CPU %", "Memory", "Restart", "Log"
-			))
-			for status in info["statusList"]:
-				lib.info(formatTemplateStr % (
-					status["id"],
-					status["type"],
-					status["pid"] if "pid" in status else "-",
-					uptimeToStr(status["uptime"]) if "uptime" in status else "-",
-					status["cpu"] if "cpu" in status else "-",
-					memoryToStr(status["memory"]) if "memory" in status else "-",
-					status["restart"] if "restart" in status else "-",
-					status["log"] if "log" in status else "-"
-				))
+			lib.info("Running application(s):")
+			printTable([
+					{"key": "id", "name": "Name"},
+					{"key": "type", "name": "Type"},
+					{"key": "pid", "name": "PID"},
+					{"key": "uptime", "name": "Uptime", "formater": formaterTime},
+					{"key": "cpu", "name": "CPU %"},
+					{"key": "memory", "name": "Memory", "formater": formaterMemory},
+					{"key": "restart", "name": "Restart"},
+					{"key": "log", "name": "Log"}], info["statusList"], indent=3)
 
 	# Print the output in JSON format
 	if not verbose:
@@ -413,7 +466,7 @@ def run(args, verboseConfig=True):
 	config = readConfig(args, verbose=verboseConfig, dispatch=False)
 
 	# Build the list of commands to be executed
-	commandList = [shlex.split(cmd) for cmd in args.commandList] + ([args.args] if args.args else [])
+	commandList = [lib.shellSplit(cmd) for cmd in args.commandList] + ([args.args] if args.args else [])
 
 	# Number of iterations to be performed (0 for endless)
 	totalIterations = args.iterations if args.iterations else (0 if args.endless else (0 if args.duration else 1))
@@ -488,7 +541,7 @@ def test(args):
 		for path in pathList:
 			if isValid(typeIds.lower(), args.filter) or isValid(path.lower(), args.filter):
 				for name in ["test", "run"]:
-					execTest = lib.getCommand(config, name, "%s.%s" % (config["platform"], typeIds), {"path": path})
+					execTest = lib.getCommand(config, name, "%s.%s" % (config["platform"], typeIds), {"path": lib.path(path)})
 					if execTest:
 						commandList.append(execTest)
 						break
@@ -787,4 +840,6 @@ if __name__ == "__main__":
 	fct(args)
 
 	# Clean-up the library
-	lib.destroy()
+	if lib.destroy():
+		sys.exit(1)
+	sys.exit(0)

@@ -93,16 +93,16 @@ pipeline {
 									%if options.compiler == "clang"%
 										recordIssues enabledForFailure: true, aggregatingResults: true, id: "%platform%%if buildName%.%buildName%%end%", tools: [clang()]
 									%end%
-									%if options.compiler == "clang-tidy"%
-										recordIssues enabledForFailure: true, aggregatingResults: true, id: "%platform%%if buildName%.%buildName%%end%", tools: [clangTidy()]
-									%end%
 									%if options.compiler == "gcc"%
 										recordIssues enabledForFailure: true, aggregatingResults: true, id: "%platform%%if buildName%.%buildName%%end%", tools: [gcc4()]
 									%end%
-									%if options.compiler == "cppcheck"%
+									%if options.lint == "clang-tidy"%
+										recordIssues enabledForFailure: true, aggregatingResults: true, id: "%platform%%if buildName%.%buildName%%end%", tools: [clangTidy()]
+									%end%
+									%if options.lint == "cppcheck"%
 										recordIssues enabledForFailure: true, aggregatingResults: true, id: "%platform%%if buildName%.%buildName%%end%", tools: [cppCheck()]
 									%end%
-									%if options.compiler == "eslint"%
+									%if options.lint == "eslint"%
 										recordIssues enabledForFailure: true, aggregatingResults: true, id: "%platform%%if buildName%.%buildName%%end%", tools: [eslint()]
 									%end%
 

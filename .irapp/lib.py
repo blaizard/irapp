@@ -21,10 +21,6 @@ try:
 except:
 	from Queue import Queue
 
-# ---- Local dependencies -----------------------------------------------------
-
-commands = imp.load_source('commands', os.path.join(os.path.dirname(__file__), 'commands.py'))
-
 # ---- Logging methods --------------------------------------------------------
 
 logPrefix = ""
@@ -52,6 +48,33 @@ def fatal(message):
 # ---- Commands related -------------------------------------------------------
 
 """
+Comprise the list of supported commands
+"""
+class Commands:
+
+	@staticmethod
+	def cd(context, argList):
+		if len(argList) != 1:
+			raise Exception("Malformed cd command, must take exactly 1 argument.")
+		newPath = os.path.join(context["cwd"], argList[0])
+		newPath = os.path.normpath(newPath)
+		if not os.path.isdir(newPath):
+			raise Exception("Directory '%s' does not exists." % (newPath))
+		context["cwd"] = newPath
+
+	@staticmethod
+	def sleep(context, argList):
+		if len(argList) != 1:
+			raise Exception("Malformed sleep command, must take exactly 1 argument.")
+		time.sleep(float(argList[0]))
+
+	@staticmethod
+	def run(context, argList):
+		if not len(argList):
+			raise Exception("Malformed exec command, must take at least 1 argument.")
+		shell(argList, cwd=context["cwd"])
+
+"""
 Start a list of commands
 """
 def start(config, commandList):
@@ -61,7 +84,7 @@ def start(config, commandList):
 	}
 
 	for command in commandList:
-		argList = shlex.split(command)
+		argList = shellSplit(command)
 
 		# Command from module
 		if argList[0] in config["pimpl"]:
@@ -70,7 +93,7 @@ def start(config, commandList):
 			config["pimpl"][argList[0]].start(argList[1], argList[2:], context)
 		# Pre-built command
 		else:
-			commandExec = getattr(commands.Commands, argList[0], None)
+			commandExec = getattr(Commands, argList[0], None)
 			if commandExec:
 				commandExec(context, argList[1:])
 			# Else an error occured
@@ -115,7 +138,18 @@ def rmtree(path, ignoreError=False):
 Build the directory of directories missing to complete the path
 """
 def mkdir(path):
-	os.makedirs(path)
+	if not os.path.exists(path):
+		os.makedirs(path)
+	if not os.path.isdir(path):
+		fatal("The directory '%s' could not be created" % (str(path)))
+
+"""
+Build a path from the path element given in argument (similar to os.path.join)
+This function, in addiciton , takes care of replacing the directory separators
+"""
+def path(*path):
+	fullPath = os.path.join(*path)
+	return fullPath.replace("/" if os.sep == "\\" else "\\", os.sep)
 
 """
 Extract the version number from the output received by a shell command
@@ -144,9 +178,127 @@ def deepMerge(dst, src):
 	return dst
 
 """
+Description of the configuration. This enforces the configuration validity.
+"""
+def configDescriptor():
+	return {
+		"assets": {
+			"type": [str],
+			"example": ".irapp/assets",
+			"help": "Path of the asset directory to store all auto-generated assets.",
+			"root": True
+		},
+		"artifacts": {
+			"type": [str],
+			"example": ".irapp/artifacts",
+			"help": "Path to store all generated artifacts.",
+			"root": True
+		},
+		"log": {
+			"type": [str],
+			"example": "log",
+			"help": "Path of the log directory, to store logs of the running applications.",
+			"root": True
+		},
+		"parallelism": {
+			"type": [int],
+			"example": 4,
+			"help": "Maximum number of job that can be simultaneously spawned by the tool."
+		},
+		"types": {
+			"type": [list, str],
+			"example": ["python", "cmake"],
+			"help": "Enforce the use of a module.",
+			"root": True
+		},
+		"start": {
+			"type": [dict, list, str],
+			"example": {"server": ["cd server/bin", "daemon server ./main"]},
+			"help": "Predefined commands to ease developmnent or deployment.",
+			"root": True
+		},
+		"dependencies": {
+			"type": [dict, list, str],
+			"example": {"debian": ["libssl-dev", "libcurl-dev"]},
+			"help": "Dependencies for the application."
+		},
+		"tests": {
+			"type": [dict, list, str],
+			"example": {"gtest": ["build/bin/tests"], "python.unittest": ["tests/testSimple.py"]},
+			"help": "List of tests for the application. Can be easily executed via app.py test.",
+			"root": True
+		},
+		"builds": {
+			"type": [dict, dict],
+			"example": {"gcc-release": {"compiler": "gcc", "lint": True}},
+			"help": "Build descriptor for the various build configurations."
+		},
+		"templates": {
+			"type": [dict, dict, str],
+			"example": {"debian": {"run": "./%path%"}},
+			"help": "Command templates used to run or test files.",
+			"user": False
+		},
+		"ignore": {
+			"type": [list, str],
+			"example": ["git.ignore.irapp"],
+			"help": "List of options to be ignored.",
+			"root": True
+		},
+		"lintIgnore": {
+			"type": [list, str],
+			"example": ["dist", "tests"],
+			"help": "List of path to be ignored by the linter."
+		},
+		"dispatch": {
+			"type": [list, str],
+			"example": ["./relative/path/to/project1"],
+			"help": "Dispatch tool action to other path or sub-applications.",
+			"root": True
+		},
+		"lib": {
+			"type": [object],
+			"example": None,
+			"help": "Instance over the tool library.",
+			"user": False,
+			"root": True
+		},
+		"root": {
+			"type": [str],
+			"example": ".",
+			"help": "Path to the root directory.",
+			"user": False,
+			"root": True
+		},
+		"pimpl": {
+			"type": [dict, object],
+			"example": {},
+			"help": "Pointer to implementation of the modules.",
+			"user": False,
+			"root": True
+		}
+	}
+
+"""
+Show the configuration help
+"""
+def configPrintHelp(user=False,  modules={}):
+	info("List of valid configuration keys and their description:")
+	descriptor = configDescriptor()
+	# Fetch sub configuration from other modules
+	for key, module in modules.items():
+		for subKey, desc in module.configDescriptor().items():
+			descriptor["%s.%s" % (key, subKey)] = desc
+	# Print the description
+	for key, meta in descriptor.items():
+		if user and "user" in meta and not meta["user"]:
+			continue
+		info("- %-14s %s Example: %s" % (key, meta["help"], meta["example"]))
+
+"""
 Ensure the proper format of the configuration
 """
-def configSanityCheck(config, user=False):
+def configSanityCheck(config, user=False, modules={}):
 
 	def assertTypes(config, key, typeList, example):
 		"""
@@ -177,23 +329,27 @@ def configSanityCheck(config, user=False):
 				raise Exception("The configuration {... \"%s\": %s ...} is not of valid format, it should be of type %s; for example: {... \"%s\": %s ...}" % (
 						key, json.dumps(config[key]), "::".join([t.__name__ for t in typeList]), key, json.dumps(example)))
 
+	def assertDescriptor(conf, descriptor, modules, keyList=[], isRoot=True):
+		for key in conf.keys():
+			if key not in descriptor:
+				if isRoot and key in modules:
+					# Update the descriptor
+					newDescriptor = modules[key].configDescriptor()
+					newDescriptor.update(descriptor)
+					assertDescriptor(conf[key], newDescriptor, modules, keyList=keyList + [key], isRoot=False)
+					continue
+				else:
+					raise Exception("The configuration key '%s' is invalid." % (".".join(keyList + [key])))
+			if user and "user" in descriptor[key] and not descriptor[key]["user"]:
+				raise Exception("The configuration key '%s' is protected and cannot be altered." % (".".join(keyList + [key])))
+			if not isRoot and "root" in descriptor[key] and descriptor[key]["root"]:
+				raise Exception("The configuration key '%s' cannot be nested." % (".".join(keyList + [key])))
+			assertTypes(conf, key, descriptor[key]["type"], descriptor[key]["example"])
+
 	if not isinstance(config, dict):
 		raise Exception("Configuration must be a dictionary: %s" % (str(config)))
 
-	if user:
-		for key in ["lib", "root", "pimpl"]:
-			if key in config:
-				raise Exception("The configuration key '%s' is protected and cannot be altered" % (key))
-
-	assertTypes(config, "parallelism", [int], 4)
-	assertTypes(config, "types", [list, str], ["python", "cmake"])
-	assertTypes(config, "start", [dict, list, str], {"server": ["cd server/bin", "daemon server ./main"]})
-	assertTypes(config, "dependencies", [dict, list, str], {"debian": ["libssl-dev", "libcurl-dev"]})
-	assertTypes(config, "tests", [dict, list, str], {"gtest": ["build/bin/tests"], "python.unittest": ["tests/testSimple.py"]})
-	assertTypes(config, "builds", [dict, dict], {"gcc-release": {"compiler": "gcc", "lint": True}})
-	assertTypes(config, "templates", [dict, dict, str], {"debian": {"run": "./%path%"}})
-	assertTypes(config, "ignore", [list, str], ["git.ignore.irapp"])
-	assertTypes(config, "dispatch", [list, str], ["./relative/path/to/project1"])
+	assertDescriptor(config, configDescriptor(), modules)
 
 """
 Return the specific command based on the attributes and the global configuration
@@ -215,21 +371,30 @@ def getCommand(config, commandType, typeIds, args):
 	return Template(templateStr).process(desc, recursive=True, removeEmptyLines=False)
 
 """
+Split a command string into a list (and handle Windows...)
+"""
+def shellSplit(commandStr):
+	return shlex.split(commandStr, posix="win" not in sys.platform)
+
+"""
 Return the path of the executable if available, None otherwise
 """
 def which(executable, cwd="."):
-	# If the path is relative, returns the full path
-	firstSep = executable.find(os.path.sep)
-	if firstSep > 0:
-		return os.path.normpath(os.path.join(cwd, executable))
-	elif firstSep == 0:
-		return executable
-
 	try:
+		"""
+		Note, Windows will try first to look for the .exe or .cmd
+		whithin the drectory requested, hence this code path should
+		happen all the time.
+		"""
 		if sys.platform =='win32':
-			for root in os.environ['PATH'].split(os.pathsep):
+			pathList = os.environ['PATH'].split(os.pathsep)
+			# If the path is a relative path
+			if executable.find(os.path.sep):
+				pathList.insert(0, path(cwd, os.path.dirname(executable)))
+				executable = os.path.basename(executable)
+			for root in pathList:
 				for ext in [".exe", ".cmd", ""]:
-					executablePath = os.path.join(root, executable + ext)
+					executablePath = path(root, executable + ext)
 					if os.path.isfile(executablePath):
 						return executablePath
 		else:
@@ -312,7 +477,7 @@ def shell(command, cwd=".", capture=False, ignoreError=False, queue=None, signal
 		finally:
 			timer.cancel()
 
-	if not stoppedBySignal and proc.returncode != 0:
+	if proc.returncode != 0:
 		errorMsgList.append("return.code=%s" % (str(proc.returncode)))
 
 	if len(errorMsgList):
@@ -490,9 +655,11 @@ def shellMulti(commandList, cwd=".", nbIterations=1, isAutoTimeout=True, verbose
 Ensure that the processes previously started are destroyed
 """
 def destroy():
+	isError = False
 	# Wait until all non-blocking process previously started are done
 	for process in runningProcess:
-		process.wait()
+		isError |= (process.wait() != 0)
+	return isError
 
 # ---- Log related methods ----------------------------------------------------
 
@@ -773,6 +940,13 @@ class Module:
 		return {}
 
 	"""
+	Update the configuration descriptor for specific configuration keys.
+	"""
+	@staticmethod
+	def configDescriptor():
+		return {}
+
+	"""
 	Get the configuration value for this modules.
 	The rule is, first look in to the specific values (aka: config["git"][...] for example)
 	if nothing is found, look in the global config (aka: config[...])
@@ -790,10 +964,7 @@ class Module:
 		if value == None and not onlySpecific:
 			value = getValue(self.config)
 		# Return the value if there is one
-		if value:
-			return value
-		# If the default value is set, return it, otherwise return the default from the specific config
-		return getValue(self.__class__.config()) if default == None else default
+		return default if value == None else value
 
 	"""
 	Asses if a confguration is ignored or not
@@ -903,7 +1074,7 @@ class Module:
 					return buildType
 
 		# If none, use the first config
-		if not onlyFromConfig and "builds" in self.__class__.config():
+		if not onlyFromConfig:
 			for name in self.getConfig(["builds"], default={}, onlySpecific=True):
 				if self.getConfig(["builds", name, "default"], default=False, onlySpecific=True):
 					return name
@@ -924,7 +1095,7 @@ class Module:
 		pass
 
 	def info(self, verbose):
-		pass
+		return {}
 
 	def clean(self):
 		pass

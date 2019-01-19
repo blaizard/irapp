@@ -10,7 +10,7 @@ class CMake(lib.Module):
 
 	@staticmethod
 	def check(config):
-		return os.path.isfile(os.path.join(config["root"], "CMakeLists.txt"))
+		return os.path.isfile(lib.path(config["root"], "CMakeLists.txt"))
 
 	@staticmethod
 	def config():
@@ -24,7 +24,9 @@ class CMake(lib.Module):
 				}
 			},
 			"buildDir": "build",
-			"outputDir": "build/bin",
+			"binDir": "build/bin",
+			"libDir": "build/lib",
+			"buildGenerator": "Ninja" if lib.which("ninja") else "Unix Makefiles",
 			"builds": {
 				"gcc-debug": {
 					"type": "Debug",
@@ -55,15 +57,38 @@ class CMake(lib.Module):
 				"clang-tidy": {
 					"type": "Debug",
 					"compiler": "clang-tidy",
-					"lint": True
+					"lint": "clang-tidy"
 				},
 				"cppcheck": {
 					"compiler": "cppcheck",
-					"lint": True
+					"lint": "cppcheck"
 				}
+			}
+		}
+
+	@staticmethod
+	def configDescriptor():
+		return {
+			"buildDir": {
+				"type": [str],
+				"example": ".irapp/build",
+				"help": "Path of the directory that will contain the build metadata."
 			},
-			"buildGenerator": "Ninja" if lib.which("ninja") else "Unix Makefiles",
-			"staticAnalyzerIgnore": [],
+			"binDir": {
+				"type": [str],
+				"example": ".irapp/build/bin",
+				"help": "Path of the directory that will receive the binaries."
+			},
+			"libDir": {
+				"type": [str],
+				"example": ".irapp/build/lib",
+				"help": "Path of the directory that will receive the libraries."
+			},
+			"buildGenerator": {
+				"type": [str],
+				"example": "Unix Makefiles",
+				"help": "Build generator to be used for this project."
+			}
 		}
 
 	def hasCoverage(self, buildType=None):
@@ -83,7 +108,6 @@ class CMake(lib.Module):
 	def getType(self, buildType=None):
 		if not buildType:
 			buildType = self.getDefaultBuildType()
-
 		# Check if this is a coverage build
 		return self.getConfig(["builds", buildType, "type"], default="Debug")
 
@@ -96,24 +120,22 @@ class CMake(lib.Module):
 
 	def init(self):
 
-		buildDirPath = os.path.join(self.config["root"], self.getConfig(["buildDir"]))
-		outputDirPath = os.path.join(self.config["root"], self.getConfig(["outputDir"])) if self.getConfig(["outputDir"]) else None
-
 		# Print cmake version
 		cmakeVersion = lib.shell(["cmake", "--version"], capture=True)
 		lib.info("CMake version: %s" % (lib.getVersion(cmakeVersion)))
 
 		# Removing CMake build directory
-		# Try to cleanup the build directory, not critical if it fails
+		buildDirPath = lib.path(self.config["root"], self.getConfig(["buildDir"]))
 		lib.info("Cleanup CMake build directory at '%s'" % (buildDirPath))
-		lib.rmtree(os.path.basename(buildDirPath), ignoreError=True)
-		lib.mkdir(os.path.basename(buildDirPath))
+		# Try to cleanup the build directory, not critical if it fails
+		lib.shell(["rm", "-rfd", os.path.basename(buildDirPath)], cwd=os.path.dirname(buildDirPath), ignoreError=True)
+		lib.shell(["mkdir", os.path.basename(buildDirPath)], cwd=os.path.dirname(buildDirPath), ignoreError=True)
 
 		# Remove all CMakeCache.txt if existing
 		for root, dirs, files in os.walk(self.config["root"]):
 			for file in files:
 				if file == "CMakeCache.txt":
-					os.remove(os.path.join(root, file))
+					os.remove(lib.path(root, file))
 
 		# Initialize CMake configurations
 		defaultBuildType = None
@@ -130,16 +152,12 @@ class CMake(lib.Module):
 				"available": False
 			}
 			updatedBuildConfig.update(buildConfig)
-			#self.config["builds"][name] = updatedBuildConfig
 
 			# Set the command
-			commandList = ["cmake", "-G", self.getConfig(["buildGenerator"]), "-DCMAKE_BUILD_TYPE=%s" % (updatedBuildConfig["type"])]
-
-			# Add the output directory if any
-			if outputDirPath:
-				commandList += ["-DCMAKE_RUNTIME_OUTPUT_DIRECTORY='%s'" % (outputDirPath),
-						"-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY='%s'" % (outputDirPath),
-						"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY='%s'" % (outputDirPath)]
+			commandList = ["cmake", "-G", self.getConfig(["buildGenerator"]), "-DCMAKE_BUILD_TYPE=%s" % (updatedBuildConfig["type"]),
+					"-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=%s" % (lib.path(self.config["root"], self.getConfig(["libDir"]))),
+					"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=%s" % (lib.path(self.config["root"], self.getConfig(["libDir"]))),
+					"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=%s" % (lib.path(self.config["root"], self.getConfig(["binDir"])))]
 
 			# ---- Compiler specific options ----------------------------------
 
@@ -202,8 +220,8 @@ class CMake(lib.Module):
 			# -----------------------------------------------------------------
 
 			lib.info("Initializing build configuration '%s' with generator '%s'" % (name, str(self.getConfig(["buildGenerator"]))))
-			lib.mkdir(os.path.join(buildDirPath, name))
-			buildTypePath = os.path.join(buildDirPath, name)
+			lib.shell(["mkdir", "-p", name], cwd=buildDirPath)
+			buildTypePath = lib.path(buildDirPath, name)
 
 			commandList.append("../..")
 			lib.shell(commandList, cwd=buildTypePath)
@@ -224,15 +242,17 @@ class CMake(lib.Module):
 			self.setDefaultBuildType(firstValidBuild)
 
 	def clean(self):
-		outputDirPath = os.path.join(self.config["root"], self.getConfig(["outputDir"])) if self.getConfig(["outputDir"]) else None
-		if outputDirPath:
-			lib.info("Cleaning output directory '%s'" % (outputDirPath))
-			lib.rmtree(outputDirPath)
-			lib.mkdir(outputDirPath)
+
+		buildDirPath = lib.path(self.config["root"], self.getConfig(["buildDir"]))
+		lib.info("Cleaning %s" % (buildDirPath))
+		lib.shell(["rm", "-rfd", lib.path(buildDirPath, "bin")], cwd=self.config["root"])
+		lib.shell(["rm", "-rfd", lib.path(buildDirPath, "lib")], cwd=self.config["root"])
+		lib.shell(["mkdir", lib.path(buildDirPath, "bin")], cwd=self.config["root"])
+		lib.shell(["mkdir", lib.path(buildDirPath, "lib")], cwd=self.config["root"])
 
 	def build(self, target=None):
 
-		buildDirPath = os.path.join(self.config["root"], self.getConfig(["buildDir"]))
+		buildDirPath = lib.path(self.config["root"], self.getConfig(["buildDir"]))
 
 		# Identifying the build type if not explicitly set
 		buildType = self.getDefaultBuildType()
@@ -242,7 +262,7 @@ class CMake(lib.Module):
 		if self.hasLint(buildType):
 
 			# Read the compile_commands.json file
-			compileCommandsJson = os.path.join(self.config["root"], self.getConfig(["buildDir"]), buildType, "compile_commands.json")
+			compileCommandsJson = lib.path(self.config["root"], self.getConfig(["buildDir"]), buildType, "compile_commands.json")
 			try:
 				with open(compileCommandsJson, "r") as f:
 					compileCommandListRaw = json.load(f)
@@ -253,7 +273,7 @@ class CMake(lib.Module):
 			compileCommandList = []
 			for command in compileCommandListRaw:
 				ignore = False
-				for ignoreStr in self.getConfig(["staticAnalyzerIgnore"]):
+				for ignoreStr in self.getConfig(["lintIgnore"]):
 					if command["file"].find(ignoreStr) != -1:
 						ignore = True
 						break
@@ -292,7 +312,7 @@ class CMake(lib.Module):
 				cppcheckVersion = lib.shell(["cppcheck", "--version"], capture=True)
 				lib.info("cppcheck version: %s" % (lib.getVersion(cppcheckVersion)))
 				ignoreArgList = []
-				for ignoreStr in self.getConfig(["staticAnalyzerIgnore"]):
+				for ignoreStr in self.getConfig(["lintIgnore"]):
 					ignoreArgList += ["-i", ignoreStr, "--suppress=*:*%s*" % (ignoreStr)]
 				for command in compileCommandList:
 					commandList.append(["cppcheck", "--enable=warning,style,performance,portability,unusedFunction,missingInclude", "--inline-suppr"]
@@ -314,51 +334,43 @@ class CMake(lib.Module):
 					hideStderr=options["hideStderr"],
 					ignoreError=True)
 		else:
-			lib.shell(["cmake", "--build", os.path.join(buildDirPath, buildType), "--target", target if target else "all", "--", "-j%i" % (self.getConfig(["parallelism"]))],
+			lib.shell(["cmake", "--build", lib.path(buildDirPath, buildType), "--target", target if target else "all", "--", "-j%i" % (self.getConfig(["parallelism"]))],
 					cwd=self.config["root"])
 
 	def info(self, verbose):
 
 		defaultBuildType = self.getDefaultBuildType()
-		buildDir = os.path.join(self.config["root"], self.getConfig(["buildDir"]))
+		buildDir = lib.path(self.config["root"], self.getConfig(["buildDir"]))
 		info = {
 			"buildGenerator": self.getConfig(["buildGenerator"]),
-			"configList": []
+			"builds": {}
 		}
 
 		# List all build types and their properties
 		for buildType, buildConfig in self.getConfig(["builds"]).items():
 			# Check if available
-			buildPath = os.path.join(buildDir, buildType)
+			buildPath = lib.path(buildDir, buildType)
 			buildPath = buildPath if os.path.isdir(buildPath) else None
 			if buildPath:
-				info["configList"].append({
-					"id": buildType,
+				info["builds"][buildType] = {
 					"default": (defaultBuildType == buildType),
 					"type": self.getType(buildType),
 					"compiler": self.getCompiler(buildType),
 					"coverage": self.hasCoverage(buildType),
 					"lint": self.hasLint(buildType),
 					"path": buildPath
-				})
-		info["configList"].sort(key=lambda config: config["id"])
+				}
 
 		if verbose:
-			lib.info("Build configurations (using '%s'):" % (self.getConfig(["buildGenerator"])))
-			templateStr = "%15s %1s %8s %10s %4s %4s %s"
-			lib.info(templateStr % ("Name", "", "Type", "Compiler", "Cov.", "Lint", "Path"))
-			for config in info["configList"]:
-				lib.info(templateStr % (config["id"], "x" if config["default"] else "", config["type"], config["compiler"], "x" if config["coverage"] else "", "x" if config["lint"] else "", config["path"]))
+			lib.info("Using build generator '%s'" % (self.getConfig(["buildGenerator"])))
 
 		# List the default targets
-		buildDirPath = os.path.join(self.config["root"], self.getConfig(["buildDir"]))
+		buildDirPath = lib.path(self.config["root"], self.getConfig(["buildDir"]))
 
-		# Ignroe the errors, it means that init command was not run
+		# Ignore the errors, it means that init command was not run
 		try:
-			targetsRaw = lib.shell(["cmake", "--build", os.path.join(buildDirPath, defaultBuildType), "--target", "help"], cwd=self.config["root"], capture=True)
-			info["targetList"] = [re.search("\.+\s+([^\s]+)", targetStr).group(1) for targetStr in targetsRaw[1:] if re.search("\.+\s+([^\s]+)", targetStr)]
-			if verbose:
-				lib.info("Targets for '%s': %s" % (defaultBuildType, ", ".join(info["targetList"])))
+			targetsRaw = lib.shell(["cmake", "--build", lib.path(buildDirPath, defaultBuildType), "--target", "help"], cwd=self.config["root"], capture=True)
+			info["targets"] = [re.search("\.+\s+([^\s]+)", targetStr).group(1) for targetStr in targetsRaw[1:] if re.search("\.+\s+([^\s]+)", targetStr)]
 		except:
 			pass
 
@@ -376,49 +388,49 @@ class CMake(lib.Module):
 			lib.info("gcov version: %s" % (lib.getVersion(gcovVersion)))
 
 			# Clean-up directory by removing all previous gcda files
-			buildDir = os.path.join(self.config["root"], self.getConfig(["buildDir"]), buildType)
+			buildDir = lib.path(self.config["root"], self.getConfig(["buildDir"]), buildType)
 			for root, dirs, files in os.walk(buildDir):
 				for file in files:
 					if file.endswith(".gcda"):
-						os.remove(os.path.join(root, file))
+						os.remove(lib.path(root, file))
 
 			# Clean-up and create the coverage directory
-			coverageDir = os.path.join(self.config["root"], self.getConfig(["buildDir"]), "coverage")
-			lib.rmtree(coverageDir)
-			lib.mkdir(coverageDir)
+			coverageDir = lib.path(self.config["root"], self.getConfig(["buildDir"]), "coverage")
+			lib.shell(["rm", "-rfd", coverageDir], cwd=self.config["root"])
+			lib.shell(["mkdir", coverageDir], cwd=self.config["root"])
 
 			# Reset the coverage counters
 			lib.shell(["lcov", "--directory", "'%s'" % (buildDir), "--zerocounters", "-q"], cwd=self.config["root"])
 
 			# Execute an empty run to setup the base
 			lib.shell(["lcov", "--capture", "--initial", "--directory", "%s" % (buildDir),
-					"--output-file", os.path.join(coverageDir, "lcov_base.info"), "-q"], cwd=self.config["root"])
+					"--output-file", lib.path(coverageDir, "lcov_base.info"), "-q"], cwd=self.config["root"])
 
 	def runPost(self, commandList):
 
 		buildType = self.getDefaultBuildType()
 		if self.hasCoverage(buildType):
 
-			coverageDir = os.path.join(self.config["root"], self.getConfig(["buildDir"]), "coverage")
-			buildDir = os.path.join(self.config["root"], self.getConfig(["buildDir"]), buildType)
+			coverageDir = lib.path(self.config["root"], self.getConfig(["buildDir"]), "coverage")
+			buildDir = lib.path(self.config["root"], self.getConfig(["buildDir"]), buildType)
 
 			# Execute the run on the previosu executable
 			lib.shell(["lcov", "--capture", "--directory", "%s" % (buildDir),
-					"--output-file", os.path.join(coverageDir, "lcov_run.info"), "-q"], cwd=self.config["root"])
+					"--output-file", lib.path(coverageDir, "lcov_run.info"), "-q"], cwd=self.config["root"])
 
 			# Join info files
-			lib.shell(["lcov", "--add-tracefile", os.path.join(coverageDir, "lcov_base.info"), "--add-tracefile", os.path.join(coverageDir, "lcov_run.info"),
-					"--output-file", os.path.join(coverageDir, "lcov_full.info"), "-q"], cwd=self.config["root"])
+			lib.shell(["lcov", "--add-tracefile", lib.path(coverageDir, "lcov_base.info"), "--add-tracefile", lib.path(coverageDir, "lcov_run.info"),
+					"--output-file", lib.path(coverageDir, "lcov_full.info"), "-q"], cwd=self.config["root"])
 
 			# Remove external dependencies
-			removeCommandList = ["lcov", "--remove", os.path.join(coverageDir, "lcov_full.info"), "-o", os.path.join(coverageDir, "lcov_full.info"), "-q", "/usr/*"]
-			for ignore in self.getConfig(["staticAnalyzerIgnore"]):
+			removeCommandList = ["lcov", "--remove", lib.path(coverageDir, "lcov_full.info"), "-o", lib.path(coverageDir, "lcov_full.info"), "-q", "/usr/*"]
+			for ignore in self.getConfig(["lintIgnore"]):
 				removeCommandList.append("*/%s/*" % (ignore))
 			lib.shell(removeCommandList, cwd=self.config["root"])
 
 			# Generate the report
 			outputList = lib.shell(["genhtml", "-o", coverageDir, "-t", "Coverage for %s built with configuration '%s'" % (", ".join([("'" + str(command[0]) + "'") for command in commandList]), buildType),
-					"--sort", os.path.join(coverageDir, "lcov_full.info")], cwd=self.config["root"], capture=True)
+					"--sort", lib.path(coverageDir, "lcov_full.info")], cwd=self.config["root"], capture=True)
 
 			while outputList:
 				line = outputList.pop()
@@ -427,4 +439,4 @@ class CMake(lib.Module):
 					break
 				lib.info("Coverage for '%s': %s%%" % (match.group(1), match.group(2)))
 
-			lib.info("Coverage report generated at '%s'" % (os.path.join(coverageDir, "index.html")))
+			lib.info("Coverage report generated at '%s'" % (lib.path(coverageDir, "index.html")))

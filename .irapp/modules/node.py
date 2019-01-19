@@ -10,25 +10,41 @@ class Node(lib.Module):
 
 	@staticmethod
 	def check(config):
-		return os.path.isfile(os.path.join(config["root"], "package.json"))
+		return os.path.isfile(lib.path(config["root"], "package.json"))
 
 	@staticmethod
 	def config():
 		return {
 			"builds": {
-				"eslint": {
-					"compiler": "eslint",
+				"eslint-nyc": {
 					"default": True,
-					"lint": True
+					"lint": "eslint",
+					"coverage": "nyc",
+					"executable": Node.getExecutable("nyc") + " --reporter=html --reporter=text --reporter=text-summary",
+					"links": {
+						"Coverage Report": "coverage/index.html"
+					}
+				}
+			},
+			"templates": {
+				"mocha": {
+					"test":  "%node.build.executable% " + Node.getExecutable("mocha") + " %path%"
 				}
 			}
 		}
 
 	"""
+	Build the executable name
+	"""
+	@staticmethod
+	def getExecutable(name):
+		return lib.path("node_modules", ".bin", name)
+
+	"""
 	Read the package.json configuration object
 	"""
 	def readPackageJson(self):
-		f = open(os.path.join(self.config["root"], "package.json"), "r")
+		f = open(lib.path(self.config["root"], "package.json"), "r")
 		with f:
 			return json.load(f)
 
@@ -56,7 +72,7 @@ class Node(lib.Module):
 			if dependenciesKey not in packageJson:
 				packageJson[dependenciesKey] = {}
 			packageJson[dependenciesKey][name] = version
-			with open('package.json', 'w') as f:
+			with open(lib.path(self.config["root"], "package.json"), 'w') as f:
 				json.dump(packageJson, f, indent=4)
 
 	def initLint(self):
@@ -67,15 +83,20 @@ class Node(lib.Module):
 		with open(self.getAssetPath(".eslintrc.js"), "r") as f:
 			eslintrcStr = f.read()
 		eslintrcStr = lib.Template(eslintrcStr).process({})
-		with open(os.path.join(self.config["root"], ".eslintrc.js"), "w") as f:
+		with open(lib.path(self.config["root"], ".eslintrc.js"), "w") as f:
 			f.write(eslintrcStr)
 
 		lib.info("Generating '.eslintignore'")
 		with open(self.getAssetPath(".eslintignore"), "r") as f:
 			eslintignoreStr = f.read()
-		eslintignoreStr = lib.Template(eslintignoreStr).process({})
-		with open(os.path.join(self.config["root"], ".eslintignore"), "w") as f:
+		eslintignoreStr = lib.Template(eslintignoreStr).process({
+			"ignoreList": self.getConfig(["lintIgnore"])
+		})
+		with open(lib.path(self.config["root"], ".eslintignore"), "w") as f:
 			f.write(eslintignoreStr)
+
+	def initCoverage(self):
+		self.addDependency("nyc", isDev=True)
 
 	def init(self):
 
@@ -90,7 +111,10 @@ class Node(lib.Module):
 		# Initialize lint
 		self.initLint()
 
-		nodeModulesPath = os.path.join(self.config["root"], "node_modules")
+		# Initialize coverage
+		self.initCoverage()
+
+		nodeModulesPath = lib.path(self.config["root"], "node_modules")
 		if os.path.isdir(nodeModulesPath):
 			lib.info("Removing '%s'" % (nodeModulesPath))
 			lib.rmtree(nodeModulesPath)
@@ -101,5 +125,5 @@ class Node(lib.Module):
 
 		buildType = self.getDefaultBuildType()
 
-		if buildType == "eslint":
-			lib.shell(["node", os.path.join("node_modules", "eslint", "bin", "eslint.js"), "."], cwd=self.config["root"], ignoreError=True)
+		if "eslint" in buildType:
+			lib.shell([Node.getExecutable("eslint"), "."], cwd=self.config["root"], ignoreError=True)

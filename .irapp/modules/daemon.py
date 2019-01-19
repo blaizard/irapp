@@ -12,11 +12,14 @@ import time
 import errno
 import timeit
 
-irappDirectoryPath = os.path.dirname(os.path.dirname(__file__))
-sys.path.insert(0, irappDirectoryPath)
-
-# Import local lib
-import lib
+# Import local lib. The different path is needed as relative import beyond the top level
+# are not supported. Note if we use the workaround for all cases, then the module lib would be loaded twice
+# and therefore configurations such as 'logPrefix' would be lost.
+if __name__ == "__main__":
+	sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+	import lib
+else:
+	from .. import lib
 
 class Daemon(lib.Module):
 
@@ -28,46 +31,57 @@ class Daemon(lib.Module):
 	Return the current process list and their PID
 	"""
 	@staticmethod
-	def getProcesses():
+	def getProcesses(includeCpuMem=False):
 		processes = {}
 		if sys.platform == "win32":
-			#output = lib.shell(["tasklist"], capture=True)
-			output = lib.shell(["wmic", "process", "get", "processid,parentprocessid,commandline", "/format:csv"], capture=True)
+			# List the processes
+			output = lib.shell(["wmic", "process", "get", "processid,parentprocessid,workingsetsize,commandline", "/format:csv"], capture=True)
 			for line in output[2:]:
 				split = line.split(",")
-				if len(split) > 2:
-					command = (",".join(split[1:-2])).strip()
-					ppid = split[-2]
-					pid = split[-1]
+				if len(split) > 4:
+					command = (",".join(split[1:-3])).strip()
+					ppid = split[-3]
+					pid = split[-2]
+					memory = split[-1]
 					if command:
 						try:
 							processes[int(pid)] = {
 								"ppid": int(ppid),
 								"command": command,
 								"cpu": 0,
-								"memory": 0
+								"memory": int(memory)
 							}
 						except:
 							pass
+			# Add cpu and memory
+			if includeCpuMem:
+				output = lib.shell(["wmic", "path", "win32_perfformatteddata_perfproc_process", "get", "percentprocessortime,idprocess", "/format:csv"], capture=True)
+				for line in output[2:]:
+					split = line.split(",")
+					if len(split) > 2:
+						pid = split[1]
+						cpu = split[2]
+						if int(pid) in processes:
+							processes[int(pid)]["cpu"] = float(cpu)
 		else:
 			output = lib.shell(["ps", "-eo", "pid,ppid,rss,%cpu,command"], capture=True)
 			for line in output[1:]:
 				fields = line.strip().split()
 				processes[int(fields[0])] = {
 					"ppid": int(fields[1]),
-					"memory": float(fields[2]),
+					"memory": float(fields[2]) * 1024,
 					"cpu": float(fields[3]),
 					"command": " ".join(fields[4:])
 				}
 		return processes
 
 	@staticmethod
-	def getRunningProcesses(appId = None):
+	def getRunningProcesses(appId=None, childrenPids=set(), includeCpuMem=False):
 		# Get process signature
 		cmdRegexpr = re.compile("%s\\.pyc?\\s+(%s)" % (re.escape(os.path.splitext(__file__)[0]), re.escape(appId))) if appId else re.compile("%s\\.pyc?\\s+([^\\s]+)" % (re.escape(os.path.splitext(__file__)[0])))
 		# Check if the same process is running
 		runningParentPis = {}
-		processes = Daemon.getProcesses()
+		processes = Daemon.getProcesses(includeCpuMem=includeCpuMem)
 
 		# Search for the parent process (that are identifiable by the regexpr)
 		for pid, process in processes.items():
@@ -76,7 +90,17 @@ class Daemon(lib.Module):
 				# Format: { pid: {id: <appId>, ...} }
 				runningParentPis[pid] = dict(process, id=match.group(1))
 
-		# Look for the child of these parent processes
+		# Return all pid associated with this parent
+		def getProcessChildren(ppid):
+			childPids = set()
+			for pid, process in processes.items():
+				if process["ppid"] == ppid:
+					if pid not in childPids:
+						childPids.add(pid)
+						childPids |= getProcessChildren(pid)
+			return childPids
+
+		# Look for all the childs of these parent processes
 		runningProcesses = {}
 		for ppid, pprocess in runningParentPis.items():
 			matches = {pid: dict(process, id=pprocess["id"]) for pid, process in processes.items() if process["ppid"] == ppid}
@@ -84,37 +108,53 @@ class Daemon(lib.Module):
 				matches = {ppid: dict(pprocess, ppid=None)}
 			runningProcesses.update(matches)
 
+		# Update the memory
+		for ppid in runningProcesses.keys():
+			pids = getProcessChildren(ppid)
+			childrenPids |= pids
+			if includeCpuMem:
+				for pid in pids:
+					runningProcesses[ppid]["memory"] += processes[pid]["memory"]
+					runningProcesses[ppid]["cpu"] += processes[pid]["cpu"]
+
 		return runningProcesses
 
 	@staticmethod
 	def killProcess(pid):
 		if sys.platform == "win32":
-			os.system("taskkill /f /pid %i" % (pid))
+			subprocess.call(["taskkill", "/f", "/pid", "%i" % (pid)], stdout=open(os.devnull, 'w'), stderr=open(os.devnull, 'w'), shell=True)
 		else:
 			os.kill(pid, signal.SIGKILL)
 		os.waitpid(pid)
 
 	def stop(self, appId=None):
 		# Get the list of running process
-		runningProcesses = Daemon.getRunningProcesses(appId)
+		childrenPids = set()
+		runningProcesses = Daemon.getRunningProcesses(appId, childrenPids=childrenPids)
 
 		# Delete the running processes if any
 		for pid, process in runningProcesses.items():
-			lib.info("Stopping daemon '%s' with pid %i" % (process["id"], pid))
+			lib.info("Stopping daemon '%s' with pid %i" % (process["id"], process["ppid"]))
 			# Stop the parent process for to make sure ti will not restart the child process
 			if process["ppid"]:
 				try:
 					Daemon.killProcess(process["ppid"])
 				except:
 					pass # Ignore errors as the process might be gone by then
-			# Stop the process itself
-			try:
-				Daemon.killProcess(pid)
-			except:
-				pass # Ignore errors as the process might be gone by then
+		# Deleting all children PIDs if still alive
+		if childrenPids:
+			lib.info("Stopping children with pid(s): %s" % (", ".join([str(pid) for pid in childrenPids])))
+			for pid in childrenPids:
+				# Stop the process itself
+				try:
+					Daemon.killProcess(pid)
+				except:
+					pass # Ignore errors as the process might be gone by then
 
 	def status(self, appId=None):
-		return [{"id": process["id"], "pid": pid, "cpu": process["cpu"], "memory": process["memory"] * 1024} for pid, process in Daemon.getRunningProcesses(appId).items()]
+		# Ceil the CPU at 100.A higher value might happen in case of multiprocessors, but it is fair to say that if one processor
+		# is already saturated, it already reaches its full potential
+		return [{"id": process["id"], "pid": pid, "cpu": min(process["cpu"], 100), "memory": process["memory"]} for pid, process in Daemon.getRunningProcesses(appId, includeCpuMem=True).items()]
 
 	def start(self, appId, commandList, context):
 

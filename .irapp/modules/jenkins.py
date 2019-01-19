@@ -8,8 +8,6 @@ class Jenkins(lib.Module):
 	@staticmethod
 	def config():
 		return {
-			"staticAnalyzer": True,
-			"staticAnalyzerIgnore": [],
 			"dependencies": {
 				"debian": ["valgrind"]
 			},
@@ -55,7 +53,6 @@ class Jenkins(lib.Module):
 		for moduleId, module in self.config["pimpl"].items():
 			for buildName, options in module.getConfig(["builds"], default={}, onlySpecific=True).items():
 				builds["%s.%s" % (moduleId, buildName)] = dict(options, configs={moduleId: buildName})
-		builds = builds or {"": {}}
 
 		# Generate the dependencies
 		dependencies = self.config["dependencies"]
