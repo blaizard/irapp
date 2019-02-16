@@ -90,7 +90,7 @@ class Node(lib.Module):
 		with open(self.getAssetPath(".eslintignore"), "r") as f:
 			eslintignoreStr = f.read()
 		eslintignoreStr = lib.Template(eslintignoreStr).process({
-			"ignoreList": self.getConfig(["lintIgnore"])
+			"ignoreList": self.getConfig(["lintIgnore"], [])
 		})
 		with open(lib.path(self.config["root"], ".eslintignore"), "w") as f:
 			f.write(eslintignoreStr)

@@ -65,14 +65,31 @@ class Commands:
 	@staticmethod
 	def sleep(context, argList):
 		if len(argList) != 1:
-			raise Exception("Malformed sleep command, must take exactly 1 argument.")
+			raise Exception("Malformed sleep command, must take exactly 1 argument (timeS).")
 		time.sleep(float(argList[0]))
+
+	@staticmethod
+	def http(context, argList):
+		if len(argList) != 1:
+			raise Exception("Malformed sleep command, must take exactly 1 argument (port).")
+		port = int(argList[0])
+		info("Deployed HTTP server at http://localhost:%i, serving '%s'" % (port, context["cwd"]))
+		if sys.version_info >= (3, 0):
+			shell([sys.executable, "-m", "http.server", str(port)], cwd=context["cwd"])
+		else:
+			shell([sys.executable, "-m", "SimpleHTTPServer", str(port)], cwd=context["cwd"])
 
 	@staticmethod
 	def run(context, argList):
 		if not len(argList):
 			raise Exception("Malformed exec command, must take at least 1 argument.")
 		shell(argList, cwd=context["cwd"])
+
+	@staticmethod
+	def runAsync(context, argList):
+		if not len(argList):
+			raise Exception("Malformed exec command, must take at least 1 argument.")
+		shell(argList, cwd=context["cwd"], blocking=False)
 
 """
 Start a list of commands

@@ -68,6 +68,31 @@ class Git(lib.Module):
 			lib.info("Using cache to store Git credentials (24h)")
 			lib.shell(["git", "config", "--local", "credential.helper", "cache --timeout=86400"])
 
+	# ---- Update config for specific platform --------------------------------
+
+	"""
+	This will save your password setting for the next X hours or use your machine
+	credential store
+	"""
+	def initPlatformSpecific(self):
+		if self.config["platform"] == "windows":
+			"""
+			If false, the executable bit differences between the index and the
+			working copy are ignored; useful on broken filesystems like FAT.
+			See git-update-index(1). True by default.
+			"""
+			lib.info("Ignore executable file type")
+			lib.shell(["git", "config", "--local", "core.filemode", "false"])
+
+			"""
+			Git can handle this by auto-converting CRLF line endings into LF
+			when you add a file to the index, and vice versa when it checks out
+			code onto your filesystem. You can turn on this functionality with the
+			core.autocrlf setting. If you’re on a Windows machine, set it to true
+			"""
+			lib.info("Auto-converting CRLF line endings into LF")
+			lib.shell(["git", "config", "--local", "core.autocrlf", "true"])
+
 	# ---- Update gitmodules ----------------------------------------------
 
 	def initGitmodule(self):
@@ -161,8 +186,8 @@ class Git(lib.Module):
 				"# ---- Automatically generated content by irapp -------------------------------",
 				"# Note: everything below this line will be updated"]
 
-		# Add new entries
-		for name, config in patterns.items():
+		# Add new entries and ensure the order of the entries (to avoid inconsitencies over platfroms)
+		for name, config in sorted(patterns.iteritems(), key=lambda (k,v): (v,k)):
 			if set(config["types"]).intersection(self.config["types"]) and not self.isIgnore("gitignore", name):
 				gitIgnoreList += ([""] if len(gitIgnoreList) and gitIgnoreList[-1] else []) + ["# %s" % (config["display"])] + config["patternList"]
 
@@ -176,3 +201,4 @@ class Git(lib.Module):
 		self.initGitmodule()
 		self.initGitignore()
 		self.initCredential()
+		self.initPlatformSpecific()

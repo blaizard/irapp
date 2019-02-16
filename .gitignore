@@ -3,11 +3,11 @@
 # ---- Automatically generated content by irapp -------------------------------
 # Note: everything below this line will be updated
 
-# Python
-*.pyc
-__pycache__/
-
 # Git
 ~*
 *.orig
 *.back
+
+# Python
+*.pyc
+__pycache__/
