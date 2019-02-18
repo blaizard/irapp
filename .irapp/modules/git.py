@@ -187,7 +187,7 @@ class Git(lib.Module):
 				"# Note: everything below this line will be updated"]
 
 		# Add new entries and ensure the order of the entries (to avoid inconsitencies over platfroms)
-		for name, config in sorted(patterns.iteritems(), key=lambda (k,v): (v,k)):
+		for name, config in sorted(patterns.items(), key=lambda d: d[0]):
 			if set(config["types"]).intersection(self.config["types"]) and not self.isIgnore("gitignore", name):
 				gitIgnoreList += ([""] if len(gitIgnoreList) and gitIgnoreList[-1] else []) + ["# %s" % (config["display"])] + config["patternList"]
 

@@ -64,7 +64,7 @@ class Jenkins(lib.Module):
 
 		# Generate the various dockerfiles
 		configs = {}
-		for platform, deps in sorted(dependencies.iteritems(), key=lambda (k,v): (v,k)):
+		for platform, deps in sorted(dependencies.items(), key=lambda d: d[0]):
 			# Remove duplicates and sort the list to ensure the order stays the same after each builds
 			deps = list(set(deps))
 			deps.sort()
@@ -73,7 +73,7 @@ class Jenkins(lib.Module):
 				"builds": {}
 			}
 			# Set default values to build
-			for buildName, options in sorted(builds.iteritems(), key=lambda (k,v): (v,k)):
+			for buildName, options in sorted(builds.items(), key=lambda d: d[0]):
 
 				updatedOptions = {
 					"compiler": "unknown",
