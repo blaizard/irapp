@@ -80,6 +80,15 @@ class Commands:
 			shell([sys.executable, "-m", "SimpleHTTPServer", str(port)], cwd=context["cwd"])
 
 	@staticmethod
+	def port(context, argList):
+		if len(argList) != 2:
+			raise Exception("Malformed port command, must take exactly 2 argument (portFrom, portTo).")
+		portFrom = int(argList[0])
+		portTo = int(argList[1])
+		info("Redirecting port %i -> %i" % (portFrom, portTo))
+		shell(["sudo", "iptables", "-t", "nat", "-A", "OUTPUT", "-o", "lo", "-p", "tcp", "--dport", str(portFrom), "-j", "REDIRECT", "--to-port", str(portTo)], cwd=context["cwd"])
+
+	@staticmethod
 	def run(context, argList):
 		if not len(argList):
 			raise Exception("Malformed exec command, must take at least 1 argument.")
