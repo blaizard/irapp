@@ -8,7 +8,8 @@ class Git(lib.Module):
 
 	@staticmethod
 	def check(config):
-		return os.path.isdir(lib.path(config["root"], ".git"))
+		# Test the existence of a file or directory. This is important to also support gitmodules.
+		return os.path.exists(lib.path(config["root"], ".git"))
 
 	# ---- gitignore rules ----------------------------------------------------
 
